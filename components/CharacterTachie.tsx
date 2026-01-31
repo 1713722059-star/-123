@@ -67,7 +67,7 @@ export const CharacterTachie: React.FC<CharacterTachieProps> = ({ status, unlock
       newOutfitId = 'jk';
     } else if (desc.includes("洛丽塔") || desc.includes("lolita") || desc.includes("洋装") || desc.includes("lo裙")) {
       newOutfitId = 'lolita';
-    } else if (desc.includes("衬衫") || desc.includes("白衬衫")) {
+    } else if (desc.includes("衬衫") || desc.includes("白衬衫") || desc.includes("白色t恤") || desc.includes("白色T恤") || desc.includes("白t恤") || desc.includes("白T恤")) {
       newOutfitId = 'white_shirt';
     } else if (desc.includes("情趣") || desc.includes("蕾丝") || desc.includes("性感") || desc.includes("内衣")) {
       newOutfitId = 'lingerie';
@@ -287,7 +287,7 @@ export const CharacterTachie: React.FC<CharacterTachieProps> = ({ status, unlock
   // 图片预加载：预加载当前服装的所有表情图片
   useEffect(() => {
     if (!currentOutfit.id || !tachieConfig[currentOutfit.id]) return;
-    
+
     const preloadImages = () => {
       const outfitConfig = tachieConfig[currentOutfit.id];
       Object.values(outfitConfig).forEach((url) => {
@@ -297,7 +297,7 @@ export const CharacterTachie: React.FC<CharacterTachieProps> = ({ status, unlock
         }
       });
     };
-    
+
     preloadImages();
   }, [currentOutfit.id]);
 

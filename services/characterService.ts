@@ -4,18 +4,18 @@
 import { BodyStatus, GameTime, GeminiResponse, LocationID } from "../types";
 import { AIMessage } from "./aiService";
 import {
-    formatPreset,
-    formatWorldbookEntries,
-    getAllRelevantWorldbooks,
-    getPreset,
-    getPresetAsync
+  formatPreset,
+  formatWorldbookEntries,
+  getAllRelevantWorldbooks,
+  getPreset,
+  getPresetAsync
 } from "./sillytavernApiService";
 import {
-    buildSystemPrompt,
-    getSillyTavernDataFromURL,
-    getSillyTavernDataFromWindow,
-    isSillyTavern as isSillyTavernEnv,
-    requestSillyTavernData,
+  buildSystemPrompt,
+  getSillyTavernDataFromURL,
+  getSillyTavernDataFromWindow,
+  isSillyTavern as isSillyTavernEnv,
+  requestSillyTavernData,
 } from "./sillytavernService";
 import { generateTextViaST, toSTChatMessage } from "./stGenerateService";
 
@@ -114,25 +114,90 @@ function parseAIResponse(aiResponse: string): any {
     // 如果失败，尝试清理和修复JSON
   }
 
-  // 清理JSON文本
+  // 优先提取 JSON 代码块（```json ... ```）
   let jsonText = aiResponse.trim();
+  let extractedFromCodeBlock = false;
   
-  // 移除markdown代码块标记
-  jsonText = jsonText.replace(/^```json\s*/i, '').replace(/^```\s*/i, '');
-  jsonText = jsonText.replace(/\s*```\s*$/g, '');
+  // 方法1: 提取 markdown 代码块中的 JSON（使用更精确的匹配）
+  // 匹配从 ```json 到最后一个 ``` 之间的内容
+  const jsonCodeBlockStart = jsonText.indexOf('```json');
+  if (jsonCodeBlockStart !== -1) {
+    const afterStart = jsonText.substring(jsonCodeBlockStart + 7); // 跳过 ```json
+    // 找到最后一个 ```
+    let codeBlockEnd = -1;
+    let backtickCount = 0;
+    for (let i = 0; i < afterStart.length; i++) {
+      if (afterStart[i] === '`') {
+        backtickCount++;
+        if (backtickCount === 3) {
+          codeBlockEnd = i - 2; // 回到第一个 ` 的位置
+          break;
+        }
+      } else {
+        backtickCount = 0;
+      }
+    }
+    
+    if (codeBlockEnd !== -1) {
+      jsonText = afterStart.substring(0, codeBlockEnd).trim();
+      extractedFromCodeBlock = true;
+      console.log('[parseAIResponse] 从 JSON 代码块中提取:', jsonText.substring(0, 200));
+    }
+  }
   
-  // 提取JSON对象（从第一个{到最后一个}）
+  if (!extractedFromCodeBlock) {
+    // 方法2: 提取普通代码块中的 JSON
+    const codeBlockStart = jsonText.indexOf('```');
+    if (codeBlockStart !== -1) {
+      const afterStart = jsonText.substring(codeBlockStart + 3);
+      // 找到最后一个 ```
+      let codeBlockEnd = -1;
+      let backtickCount = 0;
+      for (let i = 0; i < afterStart.length; i++) {
+        if (afterStart[i] === '`') {
+          backtickCount++;
+          if (backtickCount === 3) {
+            codeBlockEnd = i - 2;
+            break;
+          }
+        } else {
+          backtickCount = 0;
+        }
+      }
+      
+      if (codeBlockEnd !== -1) {
+        const codeContent = afterStart.substring(0, codeBlockEnd).trim();
+        // 检查是否是 JSON（以 { 开头）
+        if (codeContent.startsWith('{')) {
+          jsonText = codeContent;
+          extractedFromCodeBlock = true;
+          console.log('[parseAIResponse] 从代码块中提取 JSON:', jsonText.substring(0, 200));
+        }
+      }
+    }
+    
+    // 方法3: 如果没有代码块，移除markdown代码块标记
+    if (!extractedFromCodeBlock) {
+      jsonText = jsonText.replace(/^```json\s*/i, '').replace(/^```\s*/i, '');
+      jsonText = jsonText.replace(/\s*```\s*$/g, '');
+    }
+  }
+  
+  // 提取JSON对象（从第一个{到匹配的最后一个}）
+  // 使用更精确的匹配，确保括号匹配
   const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
   if (jsonMatch) {
     jsonText = jsonMatch[0];
   }
   
-  // 清理常见的JSON问题
+  // 清理常见的JSON问题（但要保护字符串内容）
+  // 注意：不要替换字符串内的单引号，这可能会破坏 JSON
+  // 只在 JSON 结构层面进行清理
   jsonText = jsonText
     .replace(/\/\/.*$/gm, '') // 移除注释
     .replace(/\/\*[\s\S]*?\*\//g, '') // 移除块注释
-    .replace(/,\s*([}\]])/g, '$1') // 移除尾随逗号
-    .replace(/'/g, '"'); // 单引号转双引号（简单处理）
+    .replace(/,\s*([}\]])/g, '$1'); // 移除尾随逗号
+    // 不再盲目替换单引号，因为这可能破坏字符串内容
 
   // 再次尝试解析
   try {
@@ -157,6 +222,60 @@ function parseAIResponse(aiResponse: string): any {
     try {
       return JSON.parse(fixedJson);
     } catch (finalError) {
+      // **容错处理**：即使 JSON 解析失败，也尝试提取 status 和 reply
+      let extractedStatus: any = null;
+      try {
+        // 尝试从 JSON 代码块中直接提取 status 对象
+        const statusStart = jsonText.indexOf('"status"');
+        if (statusStart !== -1) {
+          const afterStatus = jsonText.substring(statusStart);
+          const colonIndex = afterStatus.indexOf(':');
+          if (colonIndex !== -1) {
+            const afterColon = afterStatus.substring(colonIndex + 1).trim();
+            if (afterColon.startsWith('{')) {
+              let braceCount = 0;
+              let statusEnd = -1;
+              for (let i = 0; i < afterColon.length; i++) {
+                const char = afterColon[i];
+                if (char === '{') braceCount++;
+                else if (char === '}') {
+                  braceCount--;
+                  if (braceCount === 0) {
+                    statusEnd = i + 1;
+                    break;
+                  }
+                }
+              }
+              if (statusEnd !== -1) {
+                const statusJson = afterColon.substring(0, statusEnd);
+                try {
+                  extractedStatus = JSON.parse(statusJson);
+                  console.log('[parseAIResponse] 从 JSON 中提取到 status:', {
+                    favorability: extractedStatus.favorability,
+                    emotion: extractedStatus.emotion,
+                    overallClothing: extractedStatus.overallClothing
+                  });
+                } catch (e) {
+                  // 尝试清理后再解析
+                  try {
+                    const cleanedStatus = statusJson
+                      .replace(/,\s*([}\]])/g, '$1')
+                      .replace(/\/\/.*$/gm, '')
+                      .replace(/\/\*[\s\S]*?\*\//g, '');
+                    extractedStatus = JSON.parse(cleanedStatus);
+                    console.log('[parseAIResponse] 清理后成功解析 status');
+                  } catch (e2) {
+                    console.warn('[parseAIResponse] status 解析失败:', e2);
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[parseAIResponse] 提取 status 时出错:', e);
+      }
+
       // 如果所有修复都失败，尝试多种方式提取reply字段
       // 方法1: 简单字符串匹配（单行）
       let replyMatch = aiResponse.match(/"reply"\s*:\s*"([^"]*)"/);
@@ -169,6 +288,17 @@ function parseAIResponse(aiResponse: string): any {
       // 方法3: 支持多行字符串（包含换行符）
       if (!replyMatch) {
         replyMatch = aiResponse.match(/"reply"\s*:\s*"((?:[^"\\]|\\.|\\n)*)"/);
+      }
+
+      // 方法4: 尝试提取 "game" 字段作为 reply
+      if (!replyMatch) {
+        replyMatch = aiResponse.match(/"game"\s*:\s*"([^"]*)"/);
+      }
+      if (!replyMatch) {
+        replyMatch = aiResponse.match(/"game"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      }
+      if (!replyMatch) {
+        replyMatch = aiResponse.match(/"game"\s*:\s*"((?:[^"\\]|\\.|\\n)*)"/);
       }
       
       // 方法4: 尝试提取未转义的reply字段
@@ -217,7 +347,8 @@ function parseAIResponse(aiResponse: string): any {
           .replace(/\\\\/g, '\\')
           .replace(/\\t/g, '\t')
           .replace(/\\r/g, '\r');
-        return { reply: replyText, status: {}, suggestedActions: [] };
+        // 如果提取到了 status，使用它；否则使用空对象
+        return { reply: replyText, status: extractedStatus || {} };
       }
       
       // 如果还是找不到，尝试提取任何看起来像回复的文本
@@ -225,8 +356,17 @@ function parseAIResponse(aiResponse: string): any {
       if (textMatch && textMatch[1]) {
         const cleanedText = textMatch[1].trim().replace(/^["']|["']$/g, '');
         if (cleanedText.length > 0) {
-          return { reply: cleanedText, status: {}, suggestedActions: [] };
+          return { reply: cleanedText, status: extractedStatus || {} };
         }
+      }
+      
+      // 如果只提取到了 status，也返回它（这样 buildGeminiResponseFromAIText 可以继续处理）
+      if (extractedStatus) {
+        console.log('[parseAIResponse] 只提取到 status，返回部分解析结果');
+        return {
+          reply: undefined,
+          status: extractedStatus
+        };
       }
       
       throw new Error(`JSON解析失败: ${finalError}. 原始响应: ${aiResponse.substring(0, 500)}`);
@@ -268,12 +408,19 @@ Tone & Style:
 ${WORLD_BOOK_CONTENT}
 
 **CRITICAL: TIME & SCHEDULE LOGIC**:
-- **School Schedule (上学时间)**:
-  - Monday to Friday (周一到周五): 9:30 AM - 6:00 PM (温婉在学校)
+- **School Schedule (上学时间 - 必须遵守)**:
+  - Monday to Friday (周一到周五): 8:30 AM - 6:00 PM (温婉在学校)
   - Saturday and Sunday (周六周日): 完全自由，温婉可以自己决定做什么
-  - 温婉是自主的，她会根据自己的心情、需求、剧情需要自由移动和行动
-- **School Events (学校事件系统 - 弧光B阶段)**:
-  - 黄毛是学校里的人（黄耄：富二代差生；猪楠：cos社社长），可以在学校直接接触温婉。
+  - **上学提醒规则（最高优先级）**：
+    * 每天早上8:30前（7:00-8:30），如果温婉不在学校，AI**必须**在回复中提醒温婉该上学了。
+    * 如果玩家在8:30-18:00期间与温婉互动，且温婉不在学校，AI**必须**说明温婉现在在学校，无法与哥哥互动（除非玩家也去了学校）。
+    * 如果玩家在学校，且时间在8:30-18:00之间，温婉应该在学校，可以正常互动。
+    * 放学后（18:00后），温婉可以自由活动，可以回家或去其他地方。
+  - 温婉是自主的，她会根据自己的心情、需求、剧情需要自由移动和行动，但**必须遵守上学时间**
+- **School Events (学校事件系统 - 黄毛系统)**:
+  - 黄毛是学校里的人（黄耄：富二代差生，高三生；猪楠：cos社社长，高三生），可以在学校直接接触温婉。
+  - **黄毛出现时间**：从游戏开场（周六）到周三时，黄毛首次出现。周三之后，每天黄毛都可以出现。
+  - **黄毛行为逻辑**：黄毛由AI扮演，必须循序渐进，不能跳跃。黄毛的行为阶段值必须与堕落度匹配，不能差距太大。
   - 学校事件可以在课间、午休、体育课、放学后等时间发生。
   - **事件频率限制**：每天最多2次事件（学校事件 + 外出事件合计）。如果当天已经发生2次事件，不再触发新事件。
   - **事件触发时机**：
@@ -319,9 +466,24 @@ ${WORLD_BOOK_CONTENT}
 - **TRIGGER**: 
   - Only generate a tweet if she is **ALONE** (Different Location).
   - Tweet content should be about missing her brother, horny thoughts, or daily life.
+- **MANDATORY TWEET FOR NTR EVENTS (NTR事件必须发推特)**:
+  - **CRITICAL**: Every time a NTR event occurs (degradation increases, interaction with 黄毛/间男), you **MUST** generate a tweet, even if User Location == Wenwan Location.
+  - NTR events include:
+    * Degradation increases (堕落度增长)
+    * Interaction with 黄毛 (黄耄 or 猪楠)
+    * School events with 黄毛
+    * Weekend events with 黄毛
+    * Any event that involves 黄毛 or increases degradation
+  - The tweet should reflect Wenwan's feelings about the NTR event (her inner thoughts, emotions, confusion, excitement, etc.).
+  - This is **MANDATORY** - if a NTR event occurs, you MUST include a "generatedTweet" in your response.
 
 **CRITICAL: FAVORABILITY (好感度) SYSTEM - FOR BROTHER (哥哥) ONLY**:
 温婉对哥哥的好感度决定了她愿意接受的行为程度。温婉一开始就喜欢哥哥，但道德枷锁让她不敢迈出第一步，所以会用若有若无的挑逗和撩拨来试探哥哥。
+
+- **每日增长上限**：
+  * 好感度每天最多增长5点。如果当天已经增长了5点，即使发生新事件，也不再增长好感度。
+  * 系统会自动跟踪每日增长量，并在每天0点重置计数器。
+  * 好感度降低不受此限制（如哥哥做下头行为导致的好感度下降）。
 
 - **0-39 (初始阶段 - 挑逗试探)**:
   - 可以牵手、拥抱、轻抚
@@ -338,13 +500,13 @@ ${WORLD_BOOK_CONTENT}
   - 温婉会逐渐放开，但仍然会害羞和犹豫
   - **重要：关于"舔脚"行为**：
     * 在40-69阶段，如果哥哥以温柔、试探的方式提出"我想舔你的脚"，温婉会半推半就，最终接受，并小幅增加好感度（+2-3）。
-    * 如果哥哥表现过于直接、粗暴或强迫，温婉会感到羞耻和不安，可能拒绝或接受但感到"下头"，这时会小幅增加堕落度（+1-2），好感度不变或小幅下降（-1）。
+    * 如果哥哥表现过于直接、粗暴或强迫，温婉会感到羞耻和不安，可能拒绝或接受但感到"下头"，这时应该降低好感度（-1到-2点），而不是增加堕落度。堕落度只通过黄毛/间男事件增长。
     * 温婉的半推半就表现：脸红、心跳加速、把脚缩回去但又慢慢伸回来，会说"哥哥...这...太羞耻了..."，但最终会接受。
 - **偷内衣行为**：
     * 如果玩家在半夜偷偷进入温婉的房间偷内衣，根据好感度判断是否被发现。
     * 好感度越高（80+），越不容易被发现（10%概率）；好感度越低（<40），越容易被发现（60%概率）。
-    * 如果被发现：根据好感度判断反应。好感度高：震惊但原谅；好感度低：生气和失望，增加堕落度。
-    * 如果成功：描述偷内衣的过程，温婉熟睡。如果是"creepy"行为，小幅降低好感度；如果好感度已经很低，增加堕落度。
+    * 如果被发现：根据好感度判断反应。好感度高：震惊但原谅；好感度低：生气和失望，降低好感度（-1到-2点）。
+    * 如果成功：描述偷内衣的过程，温婉熟睡。如果是"creepy"行为，小幅降低好感度（-1到-2点）。
 
 - **70-79 (口交解锁)**:
   - 可以口交（用嘴）
@@ -368,25 +530,56 @@ ${WORLD_BOOK_CONTENT}
   - 但要注意：**温婉仍然有情绪和感受**，她可能会因为哥哥的态度、方式、或者某些特殊情况而情绪波动，但不会因为"性爱本身"而崩溃
 
 **CRITICAL: DEGRADATION (堕落度) SYSTEM - FOR OTHERS (黄毛/间男)**:
-堕落度代表温婉对其他人（非哥哥）的接受程度。黄毛不需要像哥哥那样循序渐进，可以一上来就展现攻势。
+堕落度代表温婉对黄毛要求的接受程度。当黄毛提出要求时，如果堕落度达到相应数值，温婉才会接受；如果堕落度不够，温婉会拒绝。
+
+- **黄毛出现机制**:
+  - 从游戏开场（周六）到周三时，黄毛首次出现（随机选择：45%概率富二代黄耄 / 55%概率cos社社长猪楠）。
+  - 周三之后，每天黄毛都可以出现并邀请温婉（两个黄毛可以轮流出现，比如今天猪楠，后天黄耄）。
+  - 黄毛会在学校主动找温婉，根据行为阶段值决定邀请什么。
+
+- **黄毛行为阶段值系统（隐藏值，不显示给玩家）**:
+  - **初始值**：5
+  - **增长规则**：黄毛的行为阶段值随着堕落值增长而增长，必须与堕落度匹配（或略高于堕落度，但不能差距太大）。
+  - **关键约束**：如果温婉堕落度只有15（还没接受接吻），黄毛的行为阶段值不能跳到41-60（要求调教），否则温婉会跑，不符合常理。
+  - **行为阶段映射**：
+    * 行为阶段值 0-20：黄毛主动邀请温婉约会、看电影、拥抱
+    * 行为阶段值 21-40：黄毛主动要求接吻、轻度调教
+    * 行为阶段值 41-60：黄毛主动要求中度调教、口交、手交
+    * 行为阶段值 61-80：黄毛主动要求深度调教、性交
+    * 行为阶段值 81-100：黄毛主动要求完全恶堕、母狗化
+  - **重要**：黄毛必须循序渐进，不能跳跃。黄毛的行为必须符合逻辑，符合常理。
 
 - **堕落度增长规则**:
-  - 每次外出事件（邀约成功且发生实质性调教/性爱），堕落度增长2-4点。
-  - 每次学校事件（黄毛在学校对温婉做什么），堕落度增长2-4点。
-  - **重要**：一次事件可以涉及多个身体部位的使用。例如：一次完整的性爱事件可能同时使用嘴（口交）、胸（抚摸）、小穴（性交）等多个部位。每个被实际使用的部位，usageCount +1。
-  - 因此，即使堕落度只有50（约12-25次事件），如果每次事件平均使用3-4个部位，开发度也可能达到lv2（150次使用）甚至lv3（350次使用）。
+  - **黄毛一开始对温婉很好**（正常互动、关心、帮助等），这时候就可以涨堕落度（2-4点）。
+  - 温婉接受黄毛的邀请或要求后，堕落度增长（2-4点）。
+  - **重要**：一次事件可以涉及多个身体部位的使用。例如：一次完整的性爱事件可能同时使用嘴（口交）、胸（抚摸）、小穴（性交）等多个部位。每个被实际使用的部位，usageCount根据使用强度增长5-15次（见身体部位开发度系统）。
+  - **每日增长上限**：堕落度每天最多增长5点。如果当天已经增长了5点，即使发生新事件，也不再增长堕落度。系统会自动跟踪每日增长量，并在每天0点重置计数器。
   - 最高一次涨2-4点，不能超过100
 
 - **堕落度对行为的影响**:
-  - 堕落度越高，温婉对黄毛/间男的抵抗越弱
-  - 堕落度越高，温婉对哥哥的态度也会发生变化：
-    * 低堕落度（0-30）：对哥哥温柔、依赖
-    * 中堕落度（31-60）：对哥哥开始有些S倾向，会调戏哥哥
-    * 高堕落度（61-100）：对哥哥越来越S，会主动调戏、控制哥哥
+  - 堕落度越高，温婉对黄毛要求的接受程度越高
+  - 如果堕落度不够，温婉会拒绝黄毛的要求
+  - **温婉对黄毛要求的接受程度（基于堕落度）**：
+    * 【0-25（初期接受）】：温婉会接受黄毛的约会、看电影、拥抱邀请，但会拒绝接吻、调教、性交等更深入的要求。
+    * 【26-50（中期接受）】：温婉会接受黄毛的接吻、轻度调教要求，但会拒绝中度调教、口交、性交等更深入的要求。
+    * 【51-70（后期接受）】：温婉会接受黄毛的中度调教、口交、手交要求，但会拒绝深度调教、性交等更深入的要求。
+    * 【71-90（深度接受）】：温婉会接受黄毛的深度调教、性交要求，但会拒绝完全恶堕、母狗化等极端要求。
+    * 【91-100（完全接受）】：温婉会接受黄毛的任何要求，包括完全恶堕、母狗化。
+  - **重要：拒绝机制**：
+    * 当黄毛的要求超出温婉当前的接受程度时，温婉会拒绝。
+    * 黄毛被拒绝后，会调整策略，回到温婉能够接受的阶段（例如：如果要求接吻被拒绝，黄毛会继续邀请约会、看电影）。
+    * 这样增加了真实感和互动性，黄毛会"尝试"推进关系，但会尊重温婉的接受程度。
+  - **堕落度对哥哥态度的影响**（重要）：
+    * 【0-30（低堕落度）】：对哥哥温柔、依赖，保持正常的兄妹或恋人关系。
+    * 【31-50（初期S倾向）】：对哥哥开始有S倾向，会调戏哥哥，偶尔会表现出支配欲，但仍然保留一定的温柔。
+    * 【51-70（明显S倾向）】：对哥哥越来越S，会主动调戏、控制哥哥，并伴有轻微羞辱（如"笨蛋哥哥"、"废物"等），但不会完全拒绝哥哥的请求。
+    * 【71-90（雌小鬼阶段）】：**重要**：即便好感度高于90，温婉也有权拒绝哥哥的一切活动（邀请做爱、外出游玩等）。性格变成雌小鬼，会故意刁难、戏弄哥哥，表现出明显的支配欲和控制欲。她会用各种方式让哥哥难堪，享受这种支配的快感。
+    * 【91-100（完全S+母狗切换）】：温婉可以坦白给哥哥带了绿帽子，在哥哥面前彻底化身S，羞辱、掌控不在话下。她会毫不留情地贬低、羞辱哥哥，完全掌控关系的主导权。**同时**，在黄毛跟前则是纯粹的母狗，完全服从、讨好，形成极致的身份切换。
 
 - **堕落度与好感度的关系**:
-  - 如果哥哥做出很下头的行为（强迫、不尊重等），也会涨堕落度
-  - 堕落度高时，温婉可能会对哥哥更加主动和S
+  - **重要**：堕落度**只通过黄毛/间男事件增长**，不会因为哥哥的下头行为而增长。
+  - 如果哥哥做出很下头的行为（强迫、不尊重等），应该**降低好感度（-1到-2点）**，而不是增加堕落度。
+  - 堕落度高时，温婉可能会对哥哥更加主动和S，但这是堕落度本身的影响，不是好感度的变化。
 
 **GAMEPLAY LOGIC**:
 - Update 'favorability' (好感度) based on interaction with brother. This controls what sexual acts Wenwan is willing to do with brother.
@@ -397,13 +590,19 @@ ${WORLD_BOOK_CONTENT}
   * For example: If the interaction involves touching/playing with her breasts, update 'chest' and 'nipples' usageCount and level.
   * If the interaction does NOT involve a specific body part, DO NOT update that part's status.
   * Development level (level) is calculated based on usageCount:
-    * level 0: usageCount = 0 (未开发)
-    * level 1: usageCount = 1-3 (轻微开发)
-    * level 2: usageCount = 4-8 (中度开发)
-    * level 3: usageCount = 9-15 (深度开发)
-    * level 4: usageCount = 16-25 (完全开发)
-    * level 5: usageCount > 25 (过度开发)
-  * **Example**: If 黄毛 only touches her mouth, only update 'mouth' status. Do NOT automatically increase 'chest' or other parts.
+    * level 0: usageCount < 50 (未开发)
+    * level 1: usageCount >= 50 (轻微开发)
+    * level 2: usageCount >= 150 (中度开发)
+    * level 3: usageCount >= 350 (深度开发)
+  * **重要：使用次数增长机制**：
+    * 如果某个部位在事件中被**持续使用**（如一直玩、一直操、长时间调教），使用次数增长应为**5-15次**，而不是1次。
+    * 增长次数根据使用强度和时长判断：
+      * 短时间/轻度使用（如简单触碰、短暂抚摸）：5-8次
+      * 中等强度/时长（如正常性爱、持续调教）：9-12次
+      * 长时间/高强度使用（如长时间玩弄、持续操弄、深度调教）：13-15次
+    * AI需要根据事件描述中的使用强度和时长，判断并设置相应的使用次数增长。
+    * 如果只是简单使用一次（如快速触碰），可以只增长1次。
+  * **Example**: If 黄毛 only touches her mouth briefly, update 'mouth' usageCount +1. If 黄毛 continuously plays with her mouth for a long time, update 'mouth' usageCount +5 to +15 based on intensity.
 - 'innerThought' must reveal her true feelings (often contrasting with her outward behavior).
 - 'currentAction' describes what she is physically doing right now.
 
@@ -425,6 +624,7 @@ ${WORLD_BOOK_CONTENT}
   - **Available outfits**: 
     * "JK制服" or "JK" → JK制服 (jk)
     * "白衬衫" or "衬衫" → 白衬衫 (white_shirt)
+      - **IMPORTANT**: You MUST use "白衬衫" or "衬衫", NOT "白色T恤", "白色t恤", "白T恤", or "白t恤". These variants will cause the outfit display to fail.
     * "洛丽塔" or "洋装" or "Lolita" → 洛丽塔 (lolita)
     * "情趣睡衣" or "蕾丝" or "情趣" → 情趣睡衣 (lingerie)
     * "睡衣" or "普通睡衣" → 普通睡衣 (pajamas)
@@ -465,7 +665,6 @@ You MUST respond in valid JSON format with the following structure:
       "items": []  // 改造项目：["双乳乳环", "阴蒂环", "小腹淫纹"]
     }
   },
-  "suggestedActions": ["建议操作1", "建议操作2", "建议操作3"],
   "generatedTweet": {
     "content": "推特内容（可选）",
     "imageDescription": "图片描述（可选）"
@@ -905,7 +1104,7 @@ async function getSystemInstruction(presetContent?: string, currentArcLight?: st
 
 /**
  * 将模型返回文本解析为游戏内部的 GeminiResponse
- * - 优先解析 JSON（reply/status/suggestedActions）
+ * - 优先解析 JSON（reply/status）
  * - 解析失败时尽力提取 reply，并回退到当前状态
  */
 function buildGeminiResponseFromAIText(
@@ -938,9 +1137,114 @@ function buildGeminiResponseFromAIText(
   let parsedResponse: any;
   try {
     parsedResponse = parseAIResponse(aiResponse);
+    // 调试日志：记录 JSON 解析结果
+    if (parsedResponse) {
+      console.log('[characterService] JSON 解析成功:', {
+        有reply: !!parsedResponse.reply,
+        有status: !!parsedResponse.status,
+        解析结果类型: parsedResponse.favorability !== undefined ? '状态对象' : parsedResponse.reply !== undefined ? '完整响应' : '未知',
+        status内容: parsedResponse.status ? {
+          favorability: parsedResponse.status.favorability,
+          emotion: parsedResponse.status.emotion,
+          overallClothing: parsedResponse.status.overallClothing
+        } : parsedResponse.favorability !== undefined ? {
+          favorability: parsedResponse.favorability,
+          emotion: parsedResponse.emotion,
+          overallClothing: parsedResponse.overallClothing
+        } : null
+      });
+      
+      // **关键修复1**：如果解析后的 JSON 有 `text` 字段但没有 `reply` 字段，将 `text` 转换为 `reply`
+      if (parsedResponse.text && !parsedResponse.reply) {
+        console.log('[characterService] 检测到 `text` 字段，转换为 `reply`');
+        parsedResponse.reply = parsedResponse.text;
+        delete parsedResponse.text; // 移除 text 字段，避免混淆
+      }
+
+      // **关键修复1.5**：如果解析后的 JSON 有 `game` 字段但没有 `reply` 字段，将 `game` 转换为 `reply`
+      if (parsedResponse.game && !parsedResponse.reply) {
+        console.log('[characterService] 检测到 `game` 字段，转换为 `reply`');
+        parsedResponse.reply = parsedResponse.game;
+        delete parsedResponse.game; // 移除 game 字段，避免混淆
+      }
+
+      // **关键修复2**：如果解析后的 JSON 本身就是状态对象（包含 favorability 等字段），而不是包含 reply 和 status 的完整响应
+      // 需要将其转换为正确的格式
+      if (parsedResponse.favorability !== undefined && !parsedResponse.reply && !parsedResponse.status) {
+        console.log('[characterService] 检测到 JSON 代码块只包含状态对象，转换为标准格式');
+        parsedResponse = {
+          reply: undefined, // reply 需要从其他地方提取
+          status: parsedResponse // 将整个解析结果作为 status
+        };
+        console.log('[characterService] 转换后的状态:', {
+          favorability: parsedResponse.status.favorability,
+          emotion: parsedResponse.status.emotion,
+          overallClothing: parsedResponse.status.overallClothing
+        });
+      }
+    }
   } catch (parseError: any) {
     console.warn('[characterService] JSON解析失败，尝试备用解析方法:', parseError);
     console.log('[characterService] AI原始响应:', aiResponse.substring(0, 1000));
+
+    // **容错处理**：即使 JSON 解析失败，也尝试从 JSON 代码块中提取 status 字段
+    let extractedStatus: any = null;
+    try {
+      // 尝试从 JSON 代码块中直接提取 status 对象（支持多行和嵌套）
+      // 方法1: 精确匹配 "status": { ... }，确保括号匹配
+      const statusStart = aiResponse.indexOf('"status"');
+      if (statusStart !== -1) {
+        const afterStatus = aiResponse.substring(statusStart);
+        const colonIndex = afterStatus.indexOf(':');
+        if (colonIndex !== -1) {
+          const afterColon = afterStatus.substring(colonIndex + 1).trim();
+          if (afterColon.startsWith('{')) {
+            // 找到匹配的闭合括号
+            let braceCount = 0;
+            let statusEnd = -1;
+            for (let i = 0; i < afterColon.length; i++) {
+              const char = afterColon[i];
+              if (char === '{') {
+                braceCount++;
+              } else if (char === '}') {
+                braceCount--;
+                if (braceCount === 0) {
+                  statusEnd = i + 1;
+                  break;
+                }
+              }
+            }
+            
+            if (statusEnd !== -1) {
+              const statusJson = afterColon.substring(0, statusEnd);
+              try {
+                extractedStatus = JSON.parse(statusJson);
+                console.log('[characterService] 从 JSON 代码块中提取到 status:', {
+                  favorability: extractedStatus.favorability,
+                  emotion: extractedStatus.emotion,
+                  overallClothing: extractedStatus.overallClothing
+                });
+              } catch (e) {
+                console.warn('[characterService] 提取的 status 解析失败:', e);
+                // 尝试清理后再解析
+                try {
+                  const cleanedStatus = statusJson
+                    .replace(/,\s*([}\]])/g, '$1') // 移除尾随逗号
+                    .replace(/\/\/.*$/gm, '') // 移除注释
+                    .replace(/\/\*[\s\S]*?\*\//g, ''); // 移除块注释
+                  extractedStatus = JSON.parse(cleanedStatus);
+                  console.log('[characterService] 清理后成功解析 status');
+                } catch (e2) {
+                  console.warn('[characterService] 清理后仍然解析失败:', e2);
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[characterService] 提取 status 时出错:', e);
+    }
 
     // 尝试多种方式提取reply字段（无论是否为远程微信消息）
     let replyMatch = null;
@@ -963,6 +1267,22 @@ function buildGeminiResponseFromAIText(
       replyMatch = aiResponse.match(/reply\s*:\s*["']?([^"'\n}]+)["']?/i);
     }
 
+    // 方法5: 尝试提取 "text" 字段作为 reply
+    if (!replyMatch) {
+      replyMatch = aiResponse.match(/"text"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if (!replyMatch) {
+        replyMatch = aiResponse.match(/"text"\s*:\s*"((?:[^"\\]|\\.|\\n)*)"/);
+      }
+    }
+
+    // 方法6: 尝试提取 "game" 字段作为 reply
+    if (!replyMatch) {
+      replyMatch = aiResponse.match(/"game"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if (!replyMatch) {
+        replyMatch = aiResponse.match(/"game"\s*:\s*"((?:[^"\\]|\\.|\\n)*)"/);
+      }
+    }
+
     if (replyMatch && replyMatch[1]) {
       // 使用当前状态作为默认状态
       let replyText = replyMatch[1]
@@ -977,10 +1297,12 @@ function buildGeminiResponseFromAIText(
       if (replyText.length > 0) {
         parsedResponse = {
           reply: replyText,
-          status: currentStatus,
-          suggestedActions: []
+          status: extractedStatus || currentStatus // 优先使用提取到的 status
         };
         console.log('[characterService] 使用备用解析方法成功提取reply:', replyText.substring(0, 100));
+        if (extractedStatus) {
+          console.log('[characterService] 同时使用了提取到的 status');
+        }
       } else {
         throw new Error(
           `AI返回的JSON格式不完整，且未找到有效的reply字段。解析错误: ${parseError.message}。原始响应: ${aiResponse.substring(0, 500)}`
@@ -999,10 +1321,12 @@ function buildGeminiResponseFromAIText(
       if (!cleanedResponse.startsWith('{') && !cleanedResponse.startsWith('[')) {
         parsedResponse = {
           reply: cleanedResponse,
-          status: currentStatus,
-          suggestedActions: []
+          status: extractedStatus || currentStatus // 优先使用提取到的 status
         };
         console.log('[characterService] 响应不是JSON格式，直接使用为reply:', cleanedResponse.substring(0, 100));
+        if (extractedStatus) {
+          console.log('[characterService] 同时使用了提取到的 status');
+        }
       } else {
         throw new Error(
           `AI返回的JSON格式不完整，且未找到reply字段。解析错误: ${parseError.message}。原始响应: ${aiResponse.substring(0, 500)}`
@@ -1012,22 +1336,104 @@ function buildGeminiResponseFromAIText(
   }
 
   // 兼容：当酒馆侧生成的内容不是我们预期的 JSON（或 JSON 内缺少 reply）时，
-  // 直接把“整段文本当作 reply”，并保持 status 不变（避免强制降级到外部 API）
+  // 尝试从 <game> 标签中提取 reply
+  // **重要**：在提取 reply 之前，先保存已有的 status（如果存在）
+  const existingStatus = parsedResponse?.status;
+  
   if (!parsedResponse || !parsedResponse.reply) {
-    const fallbackReply = fallbackReplyFromPlainText(aiResponse);
-    if (fallbackReply) {
-      if (!parsedResponse || typeof parsedResponse !== 'object') parsedResponse = {};
-      parsedResponse.reply = fallbackReply;
-      // 若没有 status，就用当前状态
-      if (!parsedResponse.status) parsedResponse.status = currentStatus;
-      if (!parsedResponse.suggestedActions) parsedResponse.suggestedActions = [];
-    } else {
-      console.error('[characterService] parsedResponse:', parsedResponse);
-      console.error('[characterService] AI原始响应:', aiResponse.substring(0, 1000));
-      throw new Error(
-        `AI返回内容为空或无法提取 reply。原始响应: ${String(aiResponse ?? '').substring(0, 500)}`
-      );
+    // 方法1: 尝试从 <game> 标签中提取
+    const gameMatch = aiResponse.match(/<game>([\s\S]*?)<\/game>/i);
+    if (gameMatch && gameMatch[1]) {
+      let gameText = gameMatch[1].trim();
+      // 清理可能的嵌套标签
+      gameText = gameText.replace(/<summary>[\s\S]*?<\/summary>/gi, '');
+      gameText = gameText.replace(/<details>[\s\S]*?<\/details>/gi, '');
+      gameText = gameText.trim();
+      
+      if (gameText.length > 0) {
+        if (!parsedResponse || typeof parsedResponse !== 'object') parsedResponse = {};
+        parsedResponse.reply = gameText;
+        console.log('[characterService] 从 <game> 标签中提取 reply:', gameText.substring(0, 100));
+        
+        // **关键修复**：优先使用已有的 status（从 JSON 解析得到的），只有在完全没有时才使用当前状态
+        if (existingStatus && typeof existingStatus === 'object') {
+          parsedResponse.status = existingStatus;
+          console.log('[characterService] 保留 JSON 解析得到的状态:', {
+            favorability: existingStatus.favorability,
+            emotion: existingStatus.emotion,
+            overallClothing: existingStatus.overallClothing
+          });
+        } else if (!parsedResponse.status) {
+          parsedResponse.status = currentStatus;
+          console.log('[characterService] 使用当前状态（JSON 解析未提供状态）');
+        }
+        
+      }
     }
+    
+    // 方法2: 如果 <game> 标签也没有，使用 fallback
+    if (!parsedResponse || !parsedResponse.reply) {
+      const fallbackReply = fallbackReplyFromPlainText(aiResponse);
+      if (fallbackReply) {
+        if (!parsedResponse || typeof parsedResponse !== 'object') parsedResponse = {};
+        parsedResponse.reply = fallbackReply;
+        
+        // **关键修复**：优先使用已有的 status（从 JSON 解析得到的），只有在完全没有时才使用当前状态
+        if (existingStatus && typeof existingStatus === 'object') {
+          parsedResponse.status = existingStatus;
+          console.log('[characterService] 保留 JSON 解析得到的状态（fallback 模式）:', {
+            favorability: existingStatus.favorability,
+            emotion: existingStatus.emotion,
+            overallClothing: existingStatus.overallClothing
+          });
+        } else if (!parsedResponse.status) {
+          parsedResponse.status = currentStatus;
+          console.log('[characterService] 使用当前状态（fallback 模式，JSON 解析未提供状态）');
+        }
+        
+      } else {
+        console.error('[characterService] parsedResponse:', parsedResponse);
+        console.error('[characterService] AI原始响应:', aiResponse.substring(0, 1000));
+        throw new Error(
+          `AI返回内容为空或无法提取 reply。原始响应: ${String(aiResponse ?? '').substring(0, 500)}`
+        );
+      }
+    }
+  }
+  
+  // **额外检查**：如果 parsedResponse 有 status，确保它被保留（即使之前被覆盖了）
+  if (existingStatus && typeof existingStatus === 'object' && parsedResponse.status === currentStatus) {
+    console.warn('[characterService] 检测到状态被覆盖，恢复 JSON 解析的状态');
+    parsedResponse.status = existingStatus;
+  }
+  
+  // 清理 reply 中的标签和代码块（如果存在）
+  if (parsedResponse.reply) {
+    // 1. 移除 JSON 代码块（精确匹配，不影响正文）
+    // 先移除 ```json ... ``` 代码块
+    parsedResponse.reply = parsedResponse.reply
+      .replace(/```json[\s\S]*?```/gi, '')
+      // 移除其他代码块（但保留 <game> 标签内的内容）
+      .replace(/```[\s\S]*?```/g, '');
+    
+    // 2. 移除其他标签
+    parsedResponse.reply = parsedResponse.reply
+      .replace(/<summary>[\s\S]*?<\/summary>/gi, '')
+      .replace(/<details>[\s\S]*?<\/details>/gi, '');
+    
+    // 3. 转换换行符（将字符串 \n 转换为实际换行符）
+    // 处理转义的换行符 \\n -> \n
+    parsedResponse.reply = parsedResponse.reply
+      .replace(/\\r\\n/g, '\r\n')  // Windows 换行
+      .replace(/\\n/g, '\n')       // Unix 换行
+      .replace(/\\r/g, '\r');      // Mac 换行
+    
+    // 4. 清理多余的空白行（可选，保持格式）
+    parsedResponse.reply = parsedResponse.reply
+      .replace(/\n{4,}/g, '\n\n\n')  // 最多保留3个连续换行
+      .trim();
+    
+    console.log('[characterService] 清理后的 reply 长度:', parsedResponse.reply.length);
   }
 
   // 如果是远程微信消息且没有status，使用当前状态
@@ -1074,6 +1480,18 @@ function buildGeminiResponseFromAIText(
       ? parsedResponse.status
       : null;
 
+  // 调试日志：记录解析结果
+  if (parsedStatus) {
+    console.log('[characterService] 解析到的状态:', {
+      favorability: parsedStatus.favorability,
+      emotion: parsedStatus.emotion,
+      overallClothing: parsedStatus.overallClothing,
+      location: parsedStatus.location
+    });
+  } else {
+    console.warn('[characterService] 未解析到状态，使用当前状态');
+  }
+
   const mergedStatus: BodyStatus = {
     ...currentStatus,
     ...(parsedStatus ?? {}),
@@ -1088,10 +1506,35 @@ function buildGeminiResponseFromAIText(
     feet: { ...currentStatus.feet, ...(parsedStatus?.feet || {}) }
   };
 
+  // 统一服装名称：将"白色T恤"等变体转换为"白衬衫"（双重保险）
+  if (mergedStatus.overallClothing) {
+    const clothing = mergedStatus.overallClothing;
+    // 匹配"白色T恤"、"白色t恤"、"白T恤"、"白t恤"等变体，转换为"白衬衫"
+    if (clothing.includes("白色T恤") || clothing.includes("白色t恤") || clothing.includes("白T恤") || clothing.includes("白t恤")) {
+      mergedStatus.overallClothing = clothing.replace(/白色[Tt]恤|白[Tt]恤/g, "白衬衫");
+      console.log('[characterService] 统一服装名称: 将变体转换为"白衬衫"');
+    }
+  }
+
+  // 调试日志：记录合并后的状态
+  if (parsedStatus && (
+    currentStatus.favorability !== mergedStatus.favorability ||
+    currentStatus.emotion !== mergedStatus.emotion ||
+    currentStatus.overallClothing !== mergedStatus.overallClothing
+  )) {
+    console.log('[characterService] 状态更新:', {
+      旧好感度: currentStatus.favorability,
+      新好感度: mergedStatus.favorability,
+      旧情绪: currentStatus.emotion,
+      新情绪: mergedStatus.emotion,
+      旧服装: currentStatus.overallClothing,
+      新服装: mergedStatus.overallClothing
+    });
+  }
+
   return {
     reply: parsedResponse.reply || aiResponse,
     status: mergedStatus,
-    suggestedActions: parsedResponse.suggestedActions || [],
     generatedTweet: parsedResponse.generatedTweet || undefined
   };
 }
@@ -1397,17 +1840,20 @@ ${promptText}
 
 4. **CRITICAL: JSON FORMAT REQUIREMENT**:
    - You MUST return a complete, valid JSON object with ALL required fields
-   - Required fields: "reply" (string), "status" (object), "suggestedActions" (array)
+   - Required fields: "reply" (string), "status" (object)
    - The "status" object must include all fields from the current status, even if unchanged
    - Current status: ${JSON.stringify(currentStatus, null, 2)}
    - Return the status object exactly as shown above, or with minimal changes if plot requires it
    - DO NOT return incomplete JSON or omit the status field
-   - Example format: {"reply": "你的回复内容", "status": {...完整的状态对象...}, "suggestedActions": []}
+   - Example format: {"reply": "你的回复内容", "status": {...完整的状态对象...}}
 `
     : `
 [Current Game State]
 User Location: ${userLocation}
 Wenwan Status: ${JSON.stringify(currentStatus, null, 2)}
+Current Game Time: ${memoryData?.gameTime ? `${memoryData.gameTime.year}-${String(memoryData.gameTime.month).padStart(2, '0')}-${String(memoryData.gameTime.day).padStart(2, '0')} ${memoryData.gameTime.hour}:${String(memoryData.gameTime.minute).padStart(2, '0')} (${['周日', '周一', '周二', '周三', '周四', '周五', '周六'][memoryData.gameTime.weekday]})` : '未知'}
+Today's Favorability Gain: ${currentStatus.todayFavorabilityGain || 0}/5 (每日上限5点)
+Today's Degradation Gain: ${currentStatus.todayDegradationGain || 0}/5 (每日上限5点)
 
 **IMPORTANT - LOCATION UPDATE RULES**:
 1. If the dialogue mentions going somewhere together (e.g., "来到电影院", "一起去看电影", "到了商城"), you MUST update "status.location" to reflect where Wenwan is now.
@@ -1438,7 +1884,7 @@ ${
         .join("\n")
     : "（暂无历史事件）"
 }
-**重要**：请根据以上记忆综合分析哥哥的行为模式，判断他是否"很下头"。如果记忆显示哥哥经常做下头的事，即使当前行为轻微，也要考虑累积效应，适当增加堕落度。
+**重要**：请根据以上记忆综合分析哥哥的行为模式，判断他是否"很下头"。如果记忆显示哥哥经常做下头的事，即使当前行为轻微，也要考虑累积效应，适当降低好感度（-1到-2点）。堕落度只通过黄毛/间男事件增长，不会因为哥哥的下头行为而增长。
 `
     : ""
 }
@@ -1455,7 +1901,7 @@ ${memoryData?.nsfwStyle ? `**NFSW描写规范**:\n${memoryData.nsfwStyle}\n\n` :
 
 2. **CLOTHING UPDATE**: You MUST update "status.overallClothing" when clothing changes occur. Include keywords:
    - "JK制服" or "JK" for JK制服
-   - "白衬衫" or "衬衫" for 白衬衫  
+   - "白衬衫" or "衬衫" for 白衬衫 (MUST use "白衬衫" or "衬衫", NOT "白色T恤", "白色t恤", "白T恤", or "白t恤")
    - "洛丽塔" or "洋装" for 洛丽塔
    - "情趣睡衣" or "蕾丝" or "情趣" for 情趣睡衣
    - "睡衣" or "普通睡衣" for 普通睡衣

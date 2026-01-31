@@ -77,10 +77,6 @@ const respSchema = {
       },
       required: ['location', 'favorability', 'libido', 'degradation', 'emotion', 'arousal', 'heartRate', 'overallClothing', 'currentAction', 'innerThought', 'mouth', 'chest', 'nipples', 'groin', 'posterior', 'feet']
     },
-    suggestedActions: {
-      type: Type.ARRAY,
-      items: { type: Type.STRING }
-    },
     generatedTweet: {
       type: Type.OBJECT,
       properties: {
@@ -90,7 +86,7 @@ const respSchema = {
       nullable: true
     }
   },
-  required: ['reply', 'status', 'suggestedActions']
+  required: ['reply', 'status']
 };
 
 export async function generateCharacterResponse(

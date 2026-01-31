@@ -132,6 +132,10 @@ export interface BodyStatus {
   yellowHair2: YellowHairInfo | null; // 黄毛2（可以同时存在）
   // 新增：身体改造
   bodyModification: BodyModification; // 身体改造状态
+  // 新增：每日增长计数器（用于限制每日好感度和堕落度增长上限）
+  todayFavorabilityGain: number; // 今天已增长的好感度（每天0点重置）
+  todayDegradationGain: number; // 今天已增长的堕落度（每天0点重置）
+  lastResetDate: string; // 上次重置日期（格式：YYYY-MM-DD）
 }
 
 export interface CalendarEvent {
@@ -166,7 +170,6 @@ export interface GameState {
 export interface GeminiResponse {
   reply: string;
   status: BodyStatus;
-  suggestedActions: string[];
   generatedTweet?: {
     content: string;
     imageDescription: string; // Detailed description of the photo

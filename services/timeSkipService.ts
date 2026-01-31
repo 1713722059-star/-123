@@ -41,11 +41,13 @@ export async function generateTimeSkipNarrative(
     const wordCount = getWordCount(days);
     const maxTokens = getMaxTokens(days);
     
-    const prompt = `请生成一段剧情描述（${wordCount.min}-${wordCount.max}字），描述温婉（妹妹）在跳过的${days}天里发生的事情。
+    const prompt = `**重要：时间已经流逝了${days}天，现在是${newTime.year}年${newTime.month}月${newTime.day}日的早上7点。**
+
+请生成一段剧情描述（${wordCount.min}-${wordCount.max}字），描述温婉（妹妹）在跳过的${days}天里发生的事情，以及现在（第二天早上）的情况。
 
 背景信息：
-- 跳过前：${oldTime.year}年${oldTime.month}月${oldTime.day}日
-- 跳过后：${newTime.year}年${newTime.month}月${newTime.day}日
+- 跳过前：${oldTime.year}年${oldTime.month}月${oldTime.day}日 ${oldTime.hour}点${oldTime.minute}分
+- 跳过后：${newTime.year}年${newTime.month}月${newTime.day}日 早上7点（现在是第二天/第三天/第X天的早上）
 - 当前好感度：${bodyStatus.favorability}
 - 当前情绪：${bodyStatus.emotion}
 - 当前位置：${bodyStatus.location}
@@ -53,12 +55,14 @@ export async function generateTimeSkipNarrative(
 - 当前动作：${bodyStatus.currentAction}
 
 要求：
-1. 描述这${days}天里温婉的日常生活、心情变化、可能发生的事情
-2. 可以包括：日常活动、心情变化、对哥哥的思念、生活细节等
-3. 使用第三人称叙述，风格温馨、细腻
-4. 根据跳过的天数，可以适当详细描述（${days}天可以描述更多细节）
-5. 可以暗示一些情感变化或生活状态的变化
-6. **重要：请确保生成完整的描述，不要中途截断**
+1. **必须明确说明时间已经流逝了${days}天，现在是第${newTime.day}天的早上7点**
+2. 描述这${days}天里温婉的日常生活、心情变化、可能发生的事情
+3. 重点描述现在（第二天早上）的情况：温婉在哪里、在做什么、心情如何
+4. 可以包括：日常活动、心情变化、对哥哥的思念、生活细节等
+5. 使用第三人称叙述，风格温馨、细腻
+6. 根据跳过的天数，可以适当详细描述（${days}天可以描述更多细节）
+7. 可以暗示一些情感变化或生活状态的变化
+8. **重要：请确保生成完整的描述，不要中途截断**
 
 剧情描述：`;
 

@@ -108,9 +108,9 @@ interface AppProps {
   walletBalance?: number; // For WalletApp / MapsApp 显示余额
   walletTransactions?: Array<{id: string; name: string; price: number; date: string; type: 'expense' | 'income'}>; // For WalletApp
   onSpendMoney?: (amount: number, item: string) => void; // For MapsApp - 消费功能
-  onSleep?: () => void; // For MapsApp - 睡觉功能
+  onSleep?: () => void; // For MapsApp - 睡觉功能（潜入妹妹房间）
+  onSleepCancel?: () => void; // For MapsApp - 正常睡觉到第二天早上
   onEnterGuestRoom?: () => void; // For MapsApp - 进入次卧
-  onStealUnderwear?: () => void; // For MapsApp - 偷内衣
   advance?: (minutes: number) => void; // For MapsApp - 时间推进功能
   backpackItems?: BackpackItem[]; // For BackpackApp
   onBuyClothing?: (outfitId: string, name: string, description: string, price: number) => void; // 购买服装
@@ -486,6 +486,7 @@ export const MapsApp: React.FC<AppProps> = ({
   const [selectedFacility, setSelectedFacility] = useState<{name: string, price?: number, priceForTwo?: number, movieTypes?: string[]} | null>(null);
   const [expandedLuxuryShop, setExpandedLuxuryShop] = useState(false); // 奢侈品店是否展开
   const [selectedMovieType, setSelectedMovieType] = useState<string | null>(null);
+  const [selectedSeatType, setSelectedSeatType] = useState<'normal' | 'vip' | 'couple' | null>(null); // 座位类型：普通座、VIP座、情侣座
   const [viewMode, setViewMode] = useState<'INTERIOR' | 'CITY' | 'FACILITY'>('INTERIOR');
 
   // Interior Rooms Definition
@@ -541,9 +542,7 @@ export const MapsApp: React.FC<AppProps> = ({
           { name: '休息区', icon: Sofa }
       ],
       'cinema': [
-          { name: '购票处', icon: Ticket, movieTypes: ['爱情类', '恐怖类', '科幻类', '剧情类'] },
-          { name: 'VIP影厅', icon: Film, price: 200 },
-          { name: '情侣座', icon: Heart, price: 300 }
+          { name: '购票处', icon: Ticket, movieTypes: ['爱情类', '恐怖类', '科幻类', '剧情类'] }
       ],
       'school': [
         { name: '教室', icon: Briefcase },
@@ -632,6 +631,8 @@ export const MapsApp: React.FC<AppProps> = ({
           });
           if (facility.movieTypes) {
               setSelectedMovieType(null); // 重置电影类型选择
+              setSelectedSeatType(null); // 重置座位类型选择
+              setSelectedSeatType(null); // 重置座位类型选择
           }
       } else {
           setSelectedFacility({ name: facilityName });
@@ -653,10 +654,10 @@ export const MapsApp: React.FC<AppProps> = ({
                       setShowSleepConfirm(true);
                   }, 800);
               }
-              // 如果移动到次卧，自动显示偷内衣选项
-              else if (isGuestBedroom && onStealUnderwear) {
+              // 如果移动到次卧，自动显示选项（让玩家自己决定做什么）
+              else if (isGuestBedroom && onEnterGuestRoom) {
                   setTimeout(() => {
-                      setShowGuestRoomOptions(true);
+                      if (onEnterGuestRoom) onEnterGuestRoom();
                   }, 800);
               }
           }).catch((error) => {
@@ -668,9 +669,9 @@ export const MapsApp: React.FC<AppProps> = ({
 
   const confirmFacilityAction = (inviteSister: boolean) => {
       if (selectedFacility && userLocation && onMoveUser) {
-          // 如果是购票处，需要先选择电影类型
-          if (selectedFacility.movieTypes && !selectedMovieType) {
-              return; // 不执行，等待选择电影类型
+          // 如果是购票处，需要先选择电影类型和座位类型
+          if (selectedFacility.movieTypes && (!selectedMovieType || !selectedSeatType)) {
+              return; // 不执行，等待选择电影类型和座位类型
           }
           
           // 如果是工作，给钱并推进时间（工作1小时）
@@ -683,6 +684,7 @@ export const MapsApp: React.FC<AppProps> = ({
               // 工作不需要移动，直接关闭弹窗
               setSelectedFacility(null);
               setSelectedMovieType(null);
+              setSelectedSeatType(null);
               return;
           }
           
@@ -702,7 +704,16 @@ export const MapsApp: React.FC<AppProps> = ({
           // 计算价格（非工作、非购买商品的情况）
           let finalPrice = 0;
           if (selectedFacility.price && !selectedFacility.isWork && userLocation !== 'adult_shop') {
-              if (inviteSister && selectedFacility.priceForTwo) {
+              // 如果是购票处，根据座位类型和是否和温婉一起计算价格
+              if (userLocation === 'cinema' && selectedFacility.movieTypes && selectedSeatType) {
+                  const seatPrices = {
+                      'normal': 100,  // 普通座100元
+                      'vip': 200,     // VIP座200元
+                      'couple': 300   // 情侣座300元
+                  };
+                  const basePrice = seatPrices[selectedSeatType];
+                  finalPrice = inviteSister ? basePrice * 2 : basePrice; // 和温婉一起×2，独自×1
+              } else if (inviteSister && selectedFacility.priceForTwo) {
                   finalPrice = selectedFacility.priceForTwo;
               } else {
                   finalPrice = selectedFacility.price;
@@ -712,21 +723,33 @@ export const MapsApp: React.FC<AppProps> = ({
           // 如果有价格，检查余额并扣款
           if (finalPrice > 0) {
               if (walletBalance >= finalPrice && onSpendMoney) {
-                  onSpendMoney(finalPrice, `${selectedFacility.name}${selectedMovieType ? ` - ${selectedMovieType}` : ''}`);
+                  const seatTypeNames = {
+                      'normal': '普通座',
+                      'vip': 'VIP座',
+                      'couple': '情侣座'
+                  };
+                  const seatName = selectedSeatType ? seatTypeNames[selectedSeatType] : '';
+                  const facilityName = `${selectedFacility.name}${selectedMovieType ? ` - ${selectedMovieType}` : ''}${seatName ? ` - ${seatName}` : ''}`;
+                  onSpendMoney(finalPrice, facilityName);
               } else {
                   alert('余额不足！');
                   return;
               }
           }
           
-          // 构建设施名称（包含电影类型）
-          const facilityName = selectedMovieType 
-              ? `${selectedFacility.name} - ${selectedMovieType}`
-              : selectedFacility.name;
+          // 构建设施名称（包含电影类型和座位类型）
+          const seatTypeNames = {
+              'normal': '普通座',
+              'vip': 'VIP座',
+              'couple': '情侣座'
+          };
+          const seatName = selectedSeatType ? seatTypeNames[selectedSeatType] : '';
+          const facilityName = `${selectedFacility.name}${selectedMovieType ? ` - ${selectedMovieType}` : ''}${seatName ? ` - ${seatName}` : ''}`;
           
           onMoveUser(userLocation, inviteSister, true, facilityName);
           setSelectedFacility(null);
           setSelectedMovieType(null);
+          setSelectedSeatType(null);
       }
   };
 
@@ -953,36 +976,99 @@ export const MapsApp: React.FC<AppProps> = ({
 
       {/* --- Modals --- */}
       {(selectedLocation || selectedFacility) && (
-          <div className="absolute inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-6 animate-fade-in">
-              <div className="bg-white rounded-3xl p-6 w-full shadow-2xl animate-slide-up max-h-[90vh] overflow-y-auto">
-                  <h3 className="text-xl font-bold text-gray-900 mb-2">
-                      {selectedLocation ? `前往 ${selectedLocation.name}?` : `体验 ${selectedFacility?.name}?`}
-                  </h3>
+          <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6 animate-fade-in">
+              <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl animate-slide-up max-h-[90vh] flex flex-col overflow-hidden">
+                  <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+                      <h3 className="text-xl font-bold text-gray-900 mb-2">
+                          {selectedLocation ? `前往 ${selectedLocation.name}?` : `体验 ${selectedFacility?.name}?`}
+                      </h3>
                   
                   {/* 电影类型选择（仅购票处） */}
                   {selectedFacility?.movieTypes && (
-                      <div className="mb-4">
-                          <p className="text-sm text-gray-600 mb-2">选择电影类型：</p>
-                          <div className="grid grid-cols-2 gap-2">
-                              {selectedFacility.movieTypes.map((type) => (
-                                  <button
-                                      key={type}
-                                      onClick={() => setSelectedMovieType(type)}
-                                      className={`py-2 px-4 rounded-xl font-bold text-sm transition-all ${
-                                          selectedMovieType === type
-                                              ? 'bg-purple-500 text-white shadow-lg'
-                                              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                                      }`}
-                                  >
-                                      {type}
-                                  </button>
-                              ))}
+                      <>
+                          <div className="mb-4">
+                              <p className="text-sm text-gray-600 mb-2">选择电影类型：</p>
+                              <div className="grid grid-cols-2 gap-2">
+                                  {selectedFacility.movieTypes.map((type) => (
+                                      <button
+                                          key={type}
+                                          onClick={() => {
+                                              setSelectedMovieType(type);
+                                              setSelectedSeatType(null); // 重置座位类型选择
+                                          }}
+                                          className={`py-2 px-4 rounded-xl font-bold text-sm transition-all ${
+                                              selectedMovieType === type
+                                                  ? 'bg-purple-500 text-white shadow-lg'
+                                                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                          }`}
+                                      >
+                                          {type}
+                                      </button>
+                                  ))}
+                              </div>
                           </div>
-                      </div>
+                          
+                          {/* 座位类型选择（仅购票处，且已选择电影类型） */}
+                          {selectedMovieType && (
+                              <div className="mb-4">
+                                  <p className="text-sm text-gray-600 mb-2">选择座位类型：</p>
+                                  <div className="grid grid-cols-3 gap-2">
+                                      <button
+                                          onClick={() => setSelectedSeatType('normal')}
+                                          className={`py-2 px-3 rounded-xl font-bold text-sm transition-all ${
+                                              selectedSeatType === 'normal'
+                                                  ? 'bg-blue-500 text-white shadow-lg'
+                                                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                          }`}
+                                      >
+                                          普通座
+                                      </button>
+                                      <button
+                                          onClick={() => setSelectedSeatType('vip')}
+                                          className={`py-2 px-3 rounded-xl font-bold text-sm transition-all ${
+                                              selectedSeatType === 'vip'
+                                                  ? 'bg-purple-500 text-white shadow-lg'
+                                                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                          }`}
+                                      >
+                                          VIP座
+                                      </button>
+                                      <button
+                                          onClick={() => setSelectedSeatType('couple')}
+                                          className={`py-2 px-3 rounded-xl font-bold text-sm transition-all ${
+                                              selectedSeatType === 'couple'
+                                                  ? 'bg-pink-500 text-white shadow-lg'
+                                                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                          }`}
+                                      >
+                                          情侣座
+                                      </button>
+                                  </div>
+                              </div>
+                          )}
+                          
+                          {/* 价格显示（仅购票处，且已选择座位类型） */}
+                          {selectedSeatType && (
+                              <div className="mb-4 p-3 bg-orange-50 rounded-xl border border-orange-200">
+                                  <div className="text-sm text-gray-600 mb-1">费用：</div>
+                                  <div className="text-lg font-bold text-orange-600">
+                                      {(() => {
+                                          const seatPrices = {
+                                              'normal': 100,
+                                              'vip': 200,
+                                              'couple': 300
+                                          };
+                                          const basePrice = seatPrices[selectedSeatType];
+                                          return `独自 ¥${basePrice} / 和温婉一起 ¥${basePrice * 2}`;
+                                      })()}
+                                  </div>
+                              </div>
+                          )}
+                      </>
                   )}
                   
-                  {/* 价格显示 */}
-                  {selectedFacility?.price && (
+                  {/* 价格显示（非购票处） */}
+                  {selectedFacility?.price && !selectedFacility.movieTypes && (
                       <div className="mb-4 p-3 bg-orange-50 rounded-xl border border-orange-200">
                           <div className="text-sm text-gray-600 mb-1">费用：</div>
                           <div className="text-lg font-bold text-orange-600">
@@ -1001,9 +1087,9 @@ export const MapsApp: React.FC<AppProps> = ({
                       {canInviteSister && (
                           <button 
                             onClick={() => selectedLocation ? confirmMove(true) : confirmFacilityAction(true)}
-                            disabled={selectedFacility?.movieTypes && !selectedMovieType}
+                            disabled={selectedFacility?.movieTypes && (!selectedMovieType || !selectedSeatType)}
                             className={`w-full py-3 rounded-xl font-bold text-white shadow-lg flex items-center justify-center gap-2 ${
-                                selectedFacility?.movieTypes && !selectedMovieType
+                                selectedFacility?.movieTypes && (!selectedMovieType || !selectedSeatType)
                                     ? 'bg-gray-400 cursor-not-allowed'
                                     : 'bg-pink-500 hover:bg-pink-600 shadow-pink-200'
                             }`}
@@ -1015,9 +1101,9 @@ export const MapsApp: React.FC<AppProps> = ({
                       
                       <button 
                         onClick={() => selectedLocation ? confirmMove(false) : confirmFacilityAction(false)}
-                        disabled={selectedFacility?.movieTypes && !selectedMovieType}
+                        disabled={selectedFacility?.movieTypes && (!selectedMovieType || !selectedSeatType)}
                         className={`w-full py-3 rounded-xl font-bold text-white shadow-lg ${
-                            selectedFacility?.movieTypes && !selectedMovieType
+                            selectedFacility?.movieTypes && (!selectedMovieType || !selectedSeatType)
                                 ? 'bg-gray-400 cursor-not-allowed'
                                 : 'bg-blue-600 hover:bg-blue-700 shadow-blue-200'
                         }`}
@@ -1030,11 +1116,13 @@ export const MapsApp: React.FC<AppProps> = ({
                             setSelectedLocation(null); 
                             setSelectedFacility(null); 
                             setSelectedMovieType(null);
+                            setSelectedSeatType(null);
                         }}
                         className="w-full py-3 rounded-xl font-bold text-gray-600 bg-gray-100 hover:bg-gray-200"
                       >
                           取消
                       </button>
+                  </div>
                   </div>
               </div>
           </div>
@@ -1045,14 +1133,14 @@ export const MapsApp: React.FC<AppProps> = ({
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-xl">
             <h3 className="text-xl font-bold text-gray-800 mb-4">睡觉</h3>
-            <p className="text-gray-600 mb-6">选择睡觉将跳到晚上11点，然后可以选择是否潜入妹妹房间。</p>
+            <p className="text-gray-600 mb-6">选择你的行动：</p>
             <div className="space-y-3">
               <button
                 onClick={() => {
                   if (onSleep) onSleep();
                   setShowSleepConfirm(false);
                 }}
-                className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700"
+                className="w-full py-3 bg-purple-600 text-white rounded-xl font-bold hover:bg-purple-700"
               >
                 睡觉
               </button>
@@ -1067,24 +1155,22 @@ export const MapsApp: React.FC<AppProps> = ({
         </div>
       )}
 
-      {/* 次卧选项弹窗 */}
+      {/* 次卧选项弹窗（潜入后让玩家自己决定做什么） */}
       {showGuestRoomOptions && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-xl">
             <h3 className="text-xl font-bold text-gray-800 mb-4">次卧（温婉的房间）</h3>
-            <p className="text-gray-600 mb-6">选择你要进行的行动...</p>
+            <p className="text-gray-600 mb-6">你已经潜入妹妹的房间，现在可以自由行动。在对话中输入你想做的事情。</p>
             <div className="space-y-3">
-              {onStealUnderwear && (
-                <button
-                  onClick={() => {
-                    onStealUnderwear();
-                    setShowGuestRoomOptions(false);
-                  }}
-                  className="w-full py-3 bg-purple-600 text-white rounded-xl font-bold hover:bg-purple-700"
-                >
-                  偷内衣
-                </button>
-              )}
+              <button
+                onClick={() => {
+                  if (onEnterGuestRoom) onEnterGuestRoom();
+                  setShowGuestRoomOptions(false);
+                }}
+                className="w-full py-3 bg-purple-600 text-white rounded-xl font-bold hover:bg-purple-700"
+              >
+                进入房间
+              </button>
               <button
                 onClick={() => setShowGuestRoomOptions(false)}
                 className="w-full py-2 text-gray-500 hover:text-gray-700"
@@ -1233,21 +1319,21 @@ export const CalendarApp: React.FC<AppProps> = ({
                             className="bg-gray-100 hover:bg-gray-200 active:scale-95 transition-all rounded-xl p-3 text-xs font-bold text-gray-700 flex flex-col items-center gap-1"
                         >
                             <Clock size={16} />
-                            <span>跳过今天</span>
+                            <span>30分钟</span>
                         </button>
                         <button
                             onClick={onSkipTwoDays}
                             className="bg-gray-100 hover:bg-gray-200 active:scale-95 transition-all rounded-xl p-3 text-xs font-bold text-gray-700 flex flex-col items-center gap-1"
                         >
                             <Clock size={16} />
-                            <span>跳过两天</span>
+                            <span>跳过1天</span>
                         </button>
                         <button
                             onClick={onSkipWeek}
                             className="bg-gray-100 hover:bg-gray-200 active:scale-95 transition-all rounded-xl p-3 text-xs font-bold text-gray-700 flex flex-col items-center gap-1"
                         >
                             <Clock size={16} />
-                            <span>跳过一周</span>
+                            <span>跳过3天</span>
                         </button>
                     </div>
                 </div>

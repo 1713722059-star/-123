@@ -13,7 +13,6 @@ import { useLocation } from './hooks/useLocation';
 import { loadGame, saveGame, shouldAutoSave } from './services/saveService';
 import { setupSillyTavernEventListeners } from './services/sillytavernApiService';
 import { summarizeCharacterMessages } from './services/summaryService';
-import { generateTimeSkipNarrative } from './services/timeSkipService';
 import { AppID, BackpackItem, BodyStatus, CalendarEvent, GameTime, LocationID, Message, Tweet } from './types';
 
 // --- Main App Logic ---
@@ -26,6 +25,7 @@ const AppContent: React.FC = () => {
   const [gameStarted, setGameStarted] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showMidnightChoice, setShowMidnightChoice] = useState(false); // 半夜选择弹窗
+  const [showGuestRoomOptions, setShowGuestRoomOptions] = useState(false); // 次卧选项弹窗
   const AVATAR_URL = "https://files.catbox.moe/5883oe.jpeg";
 
   // Game State
@@ -108,7 +108,39 @@ const AppContent: React.FC = () => {
     ));
   };
 
-  // 偷内衣处理函数
+  // 计算跳过后的时间（辅助函数）
+  const calculateSkippedTime = (currentTime: GameTime, days: number): GameTime => {
+    const newTime = { ...currentTime };
+    newTime.day += days;
+    // 处理月份和年份的进位
+    while (true) {
+      const maxDays = new Date(newTime.year, newTime.month, 0).getDate();
+      if (newTime.day <= maxDays) break;
+      newTime.day -= maxDays;
+      newTime.month += 1;
+      if (newTime.month > 12) {
+        newTime.month = 1;
+        newTime.year += 1;
+      }
+    }
+    newTime.hour = 7;
+    newTime.minute = 0;
+    newTime.weekday = (newTime.weekday + days) % 7;
+    return newTime;
+  };
+
+  // 正常睡觉到第二天早上
+  const handleSleepCancel = async () => {
+    const oldTime = { ...gameTime };
+    // 跳到第二天早上7点
+    const nextMorning = calculateSkippedTime(gameTime, 1);
+    setGameTime(nextMorning);
+
+    // 使用 handleAction 生成AI剧情，就像"前往电影院"一样
+    await handleAction(`(System: 你正常睡觉，睡到了第二天早上。时间已经流逝了1天，现在是${nextMorning.year}年${nextMorning.month}月${nextMorning.day}日的早上7点。生成一段剧情描述，描述现在（第二天早上）的情况。温婉在哪里、在做什么、心情如何。就像描述"前往电影院"一样，生成完整的剧情场景。)`, true);
+  };
+
+  // 偷内衣处理函数（保留但不再使用）
   const handleStealUnderwear = async () => {
     // 确保温婉位置在次卧（偷内衣时）
     setBodyStatus(prev => ({
@@ -275,7 +307,11 @@ const AppContent: React.FC = () => {
     bodyModification: {
       completed: false,
       items: []
-    }
+    },
+    // 新增：每日增长计数器（初始为0）
+    todayFavorabilityGain: 0,
+    todayDegradationGain: 0,
+    lastResetDate: `${gameTime.year}-${String(gameTime.month).padStart(2, '0')}-${String(gameTime.day).padStart(2, '0')}`
   });
 
   const handleStartGame = () => {
@@ -493,7 +529,6 @@ const AppContent: React.FC = () => {
   const {
     input,
     isLoading,
-    suggestedActions,
     setInput,
     handleAction,
     addMemory
@@ -541,125 +576,96 @@ const AppContent: React.FC = () => {
     advance // 传递时间推进函数
   });
 
-  // 用于跟踪跳过时间操作
-  const skipTimeDataRef = useRef<{ oldTime: GameTime; days: number; loadingMessageId: string } | null>(null);
   const previousTimeRef = useRef<GameTime>(gameTime);
 
-  // 包装跳过时间函数，记录跳过操作并显示加载提示
-  const handleSkipToday = () => {
-    const loadingMessageId = Date.now().toString();
-    // 立即显示"时间流逝中..."提示
-    setMessages(prev => [...prev, {
-      id: loadingMessageId,
-      sender: 'system',
-      text: '【时间流逝中...】\n\n正在生成剧情描述，请稍候...',
-      timestamp: new Date()
-    }]);
-    skipTimeDataRef.current = { oldTime: { ...gameTime }, days: 1, loadingMessageId };
-    skipToday();
-  };
-
-  const handleSkipTwoDays = () => {
-    const loadingMessageId = Date.now().toString();
-    setMessages(prev => [...prev, {
-      id: loadingMessageId,
-      sender: 'system',
-      text: '【时间流逝中...】\n\n正在生成剧情描述，请稍候...',
-      timestamp: new Date()
-    }]);
-    skipTimeDataRef.current = { oldTime: { ...gameTime }, days: 2, loadingMessageId };
-    skipTwoDays();
-  };
-
-  const handleSkipWeek = () => {
-    const loadingMessageId = Date.now().toString();
-    setMessages(prev => [...prev, {
-      id: loadingMessageId,
-      sender: 'system',
-      text: '【时间流逝中...】\n\n正在生成剧情描述，请稍候...',
-      timestamp: new Date()
-    }]);
-    skipTimeDataRef.current = { oldTime: { ...gameTime }, days: 7, loadingMessageId };
-    skipWeek();
-  };
-
-  // 监听时间变化，当检测到跳过操作时生成剧情
-  useEffect(() => {
-    const prevTime = previousTimeRef.current;
-    const currentTime = gameTime;
-
-    // 检查是否是跳过操作
-    if (skipTimeDataRef.current) {
-      const { oldTime, days, loadingMessageId } = skipTimeDataRef.current;
-
-      // 计算实际跳过的天数
-      const oldDate = new Date(oldTime.year, oldTime.month - 1, oldTime.day);
-      const newDate = new Date(currentTime.year, currentTime.month - 1, currentTime.day);
-      const actualDays = Math.floor((newDate.getTime() - oldDate.getTime()) / (1000 * 60 * 60 * 24));
-
-      if (actualDays > 0) {
-        // 生成剧情
-        // 定义重试函数
-        const retryGenerateNarrative = () => {
-          // 重新生成剧情
-          generateTimeSkipNarrative(
-            actualDays,
-            oldTime,
-            currentTime,
-            bodyStatus,
-            settings.mainAI
-          ).then(narrative => {
-            if (narrative && narrative.trim()) {
-              // 替换消息为实际剧情
-              setMessages(prev => prev.map(msg =>
-                msg.id === loadingMessageId
-                  ? {
-                    ...msg,
-                    text: `【时间流逝】\n\n${narrative}`,
-                    isRetryable: false, // 成功后移除重试按钮
-                    retryAction: undefined
-                  }
-                  : msg
-              ));
-            } else {
-              // 如果生成失败，保留重试按钮
-              setMessages(prev => prev.map(msg =>
-                msg.id === loadingMessageId
-                  ? {
-                    ...msg,
-                    text: '【时间流逝】\n\n时间已跳过，但剧情生成失败。点击下方按钮重试。',
-                    isRetryable: true,
-                    retryAction: retryGenerateNarrative
-                  }
-                  : msg
-              ));
-            }
-          }).catch(err => {
-            console.error('生成跳过时间剧情失败:', err);
-            // 保留重试按钮
-            setMessages(prev => prev.map(msg =>
-              msg.id === loadingMessageId
-                ? {
-                  ...msg,
-                  text: `【时间流逝】\n\n时间已跳过，但剧情生成失败：${err instanceof Error ? err.message : '未知错误'}。点击下方按钮重试。`,
-                  isRetryable: true,
-                  retryAction: retryGenerateNarrative
-                }
-                : msg
-            ));
-          });
-        };
-
-        // 首次生成
-        retryGenerateNarrative();
-
-        // 清除标记
-        skipTimeDataRef.current = null;
+  // 包装跳过时间函数，使用 handleAction 生成AI剧情
+  const handleSkipToday = async () => {
+    const oldTime = { ...gameTime };
+    // 推进30分钟
+    advance(30);
+    
+    // 计算新时间（30分钟后）
+    let newTime = { ...gameTime };
+    newTime.minute += 30;
+    if (newTime.minute >= 60) {
+      newTime.minute -= 60;
+      newTime.hour += 1;
+      if (newTime.hour >= 24) {
+        newTime.hour = 0;
+        newTime.day += 1;
+        // 处理月份和年份进位
+        const maxDays = new Date(newTime.year, newTime.month, 0).getDate();
+        if (newTime.day > maxDays) {
+          newTime.day = 1;
+          newTime.month += 1;
+          if (newTime.month > 12) {
+            newTime.month = 1;
+            newTime.year += 1;
+          }
+        }
+        newTime.weekday = (newTime.weekday + 1) % 7;
       }
     }
+    
+    const period = newTime.hour < 12 ? '上午' : newTime.hour < 18 ? '下午' : '晚上';
+    const displayHour = newTime.hour > 12 ? newTime.hour - 12 : newTime.hour === 0 ? 12 : newTime.hour;
+    const timeStr = `${period}${displayHour}点${newTime.minute === 0 ? '' : newTime.minute + '分'}`;
+    
+    // 使用 handleAction 生成AI剧情
+    await handleAction(`(System: 时间已经流逝了30分钟，现在是${newTime.year}年${newTime.month}月${newTime.day}日 ${timeStr}。生成一段剧情描述，描述这30分钟里发生的事情，以及现在的情况。温婉在哪里、在做什么、心情如何。就像描述"前往电影院"一样，生成完整的剧情场景。)`, true);
+  };
 
-    previousTimeRef.current = currentTime;
-  }, [gameTime.year, gameTime.month, gameTime.day, bodyStatus, settings.mainAI]);
+  const handleSkipTwoDays = async () => {
+    const oldTime = { ...gameTime };
+    const newTime = calculateSkippedTime(gameTime, 1);
+    skipToday(); // 跳到第二天早上7点（原来是skipTwoDays，现在改为skipToday，推进1天）
+    
+    // 跳过三天时，好感度减3
+    setBodyStatus(prev => {
+      const newFavorability = Math.max(0, prev.favorability - 3); // 确保不低于0
+      console.log(`[handleSkipTwoDays] 跳过三天，好感度减少: ${prev.favorability} → ${newFavorability}`);
+      return {
+        ...prev,
+        favorability: newFavorability
+      };
+    });
+    
+    // 使用 handleAction 生成AI剧情
+    await handleAction(`(System: 时间已经流逝了1天，现在是${newTime.year}年${newTime.month}月${newTime.day}日的早上7点。生成一段剧情描述，描述这1天里发生的事情，以及现在（第二天早上）的情况。温婉在哪里、在做什么、心情如何。就像描述"前往电影院"一样，生成完整的剧情场景。)`, true);
+  };
+
+  const handleSkipWeek = async () => {
+    const oldTime = { ...gameTime };
+    // 推进3天（原来是7天）
+    const newTime = calculateSkippedTime(gameTime, 3);
+    
+    // 手动推进3天
+    let updatedTime = { ...gameTime };
+    updatedTime.day += 3;
+    // 处理月份和年份的进位
+    while (true) {
+      const maxDays = new Date(updatedTime.year, updatedTime.month, 0).getDate();
+      if (updatedTime.day <= maxDays) break;
+      updatedTime.day -= maxDays;
+      updatedTime.month += 1;
+      if (updatedTime.month > 12) {
+        updatedTime.month = 1;
+        updatedTime.year += 1;
+      }
+    }
+    updatedTime.hour = 7;
+    updatedTime.minute = 0;
+    updatedTime.weekday = (updatedTime.weekday + 3) % 7;
+    setGameTime(updatedTime);
+    
+    // 使用 handleAction 生成AI剧情
+    await handleAction(`(System: 时间已经流逝了3天，现在是${newTime.year}年${newTime.month}月${newTime.day}日的早上7点。生成一段剧情描述，描述这3天里发生的事情，以及现在（第四天早上）的情况。温婉在哪里、在做什么、心情如何。就像描述"前往电影院"一样，生成完整的剧情场景。)`, true);
+  };
+
+  // 不再需要监听时间变化生成剧情，因为现在直接使用 handleAction 生成
+  useEffect(() => {
+    previousTimeRef.current = gameTime;
+  }, [gameTime.year, gameTime.month, gameTime.day]);
 
   // 监听消息变化，生成总结（不再自动推进时间）
   // 时间推进改为在用户发送消息时推进，而不是AI回复后
@@ -772,10 +778,15 @@ const AppContent: React.FC = () => {
             <p className="text-gray-600 mb-6">你躺在床上，突然想到温婉就在隔壁房间...</p>
             <div className="space-y-3">
               <button
-                onClick={() => {
+                onClick={async () => {
                   setShowMidnightChoice(false);
-                  // 潜入妹妹房间，触发偷内衣剧情
-                  handleStealUnderwear();
+                  // 潜入妹妹房间，告诉AI现在是晚上11点并移动位置
+                  setUserLocation('guest_bedroom');
+                  await handleAction(`(System: 现在是晚上11点（${gameTime.year}年${gameTime.month}月${gameTime.day}日晚上11点），你决定潜入妹妹的房间。User moved to guest_bedroom. Status: Alone. Wenwan is in guest_bedroom sleeping. 生成一段剧情描述，描述你潜入妹妹房间的过程和现在的情况。注意：现在是深夜11点，温婉应该在睡觉。)`, true);
+                  // 显示选项让玩家决定做什么
+                  setTimeout(() => {
+                    setShowGuestRoomOptions(true);
+                  }, 800);
                 }}
                 className="w-full py-3 bg-purple-600 text-white rounded-xl font-bold hover:bg-purple-700"
               >
@@ -784,34 +795,40 @@ const AppContent: React.FC = () => {
               <button
                 onClick={() => {
                   setShowMidnightChoice(false);
-                  // 继续睡，跳到第二天早上8点
-                  const nightTime = gameTime;
-                  const nextMorning = { ...nightTime };
-                  nextMorning.hour = 8;
-                  nextMorning.minute = 0;
-                  const nextDay = new Date(nextMorning.year, nextMorning.month - 1, nextMorning.day + 1);
-                  nextMorning.year = nextDay.getFullYear();
-                  nextMorning.month = nextDay.getMonth() + 1;
-                  nextMorning.day = nextDay.getDate();
-                  nextMorning.weekday = nextDay.getDay();
-                  setGameTime(nextMorning);
-
-                  setMessages(prev => [...prev, {
-                    id: (Date.now() + 1).toString(),
-                    sender: 'system',
-                    text: '你沉沉睡去，直到第二天早上8点...',
-                    timestamp: new Date()
-                  }]);
-
-                  // 确保温婉位置在次卧（早上8点）
-                  setBodyStatus(prev => ({
-                    ...prev,
-                    location: prev.location || 'guest_bedroom'
-                  }));
+                  // 继续睡，正常睡觉到第二天早上
+                  handleSleepCancel();
                 }}
                 className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700"
               >
                 继续睡
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 次卧选项弹窗（潜入后让玩家自己决定做什么） */}
+      {showGuestRoomOptions && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-xl">
+            <h3 className="text-xl font-bold text-gray-800 mb-4">次卧（温婉的房间）</h3>
+            <p className="text-gray-600 mb-6">你已经潜入妹妹的房间，现在可以自由行动。在对话中输入你想做的事情。</p>
+            <div className="space-y-3">
+              <button
+                onClick={() => {
+                  setShowGuestRoomOptions(false);
+                  // 进入房间，让玩家在对话中自由行动
+                  handleMoveUser('guest_bedroom', false);
+                }}
+                className="w-full py-3 bg-purple-600 text-white rounded-xl font-bold hover:bg-purple-700"
+              >
+                进入房间
+              </button>
+              <button
+                onClick={() => setShowGuestRoomOptions(false)}
+                className="w-full py-2 text-gray-500 hover:text-gray-700"
+              >
+                取消
               </button>
             </div>
           </div>
@@ -833,7 +850,6 @@ const AppContent: React.FC = () => {
             messages={messages}
             input={input}
             isLoading={isLoading}
-            suggestedActions={suggestedActions}
             onInputChange={setInput}
             onAction={handleAction}
             onEditMessage={handleEditMessage}
@@ -927,7 +943,7 @@ const AppContent: React.FC = () => {
               alert(`工作完成！获得¥${amount}`);
             }}
             onSleep={async () => {
-              // 睡觉：跳到晚上11点，然后弹出选择
+              // 睡觉：跳到晚上11点，然后弹出选择是否潜入妹妹房间
               const currentTime = gameTime;
 
               // 先跳到晚上11点
@@ -956,11 +972,15 @@ const AppContent: React.FC = () => {
                 setShowMidnightChoice(true);
               }, 800);
             }}
+            onSleepCancel={handleSleepCancel}
             onEnterGuestRoom={async () => {
-              // 进入次卧
+              // 进入次卧，让玩家自己决定做什么
               await handleMoveUser('guest_bedroom', false);
+              // 显示选项让玩家决定做什么
+              setTimeout(() => {
+                setShowGuestRoomOptions(true);
+              }, 800);
             }}
-            onStealUnderwear={handleStealUnderwear}
             status={bodyStatus}
             backpackItems={backpackItems}
             onBuyClothing={handleBuyClothing}
@@ -987,7 +1007,6 @@ const AppContent: React.FC = () => {
               messages={messages}
               input={input}
               isLoading={isLoading}
-              suggestedActions={suggestedActions}
               onInputChange={setInput}
               onAction={handleAction}
               onEditMessage={handleEditMessage}
@@ -1203,10 +1222,14 @@ const AppContent: React.FC = () => {
                     }, 800);
                   }}
                   onEnterGuestRoom={async () => {
-                    // 进入次卧
+                    // 进入次卧，让玩家自己决定做什么
                     await handleMoveUser('guest_bedroom', false);
+                    // 显示选项让玩家决定做什么
+                    setTimeout(() => {
+                      setShowGuestRoomOptions(true);
+                    }, 800);
                   }}
-                  onStealUnderwear={handleStealUnderwear}
+                  onSleepCancel={handleSleepCancel}
                   status={bodyStatus}
                   advance={advance}
                 />

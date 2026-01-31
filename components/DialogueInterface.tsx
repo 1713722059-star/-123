@@ -8,7 +8,6 @@ interface DialogueInterfaceProps {
     messages: Message[];
     input: string;
     isLoading: boolean;
-    suggestedActions: string[];
     onInputChange: (value: string) => void;
     onAction: (actionText: string) => void;
     onEditMessage?: (messageId: string, newText: string) => void; // 编辑消息
@@ -19,7 +18,6 @@ export const DialogueInterface: React.FC<DialogueInterfaceProps> = ({
     messages,
     input,
     isLoading,
-    suggestedActions,
     onInputChange,
     onAction,
     onEditMessage,
@@ -279,20 +277,6 @@ export const DialogueInterface: React.FC<DialogueInterfaceProps> = ({
 
                 {/* 底部输入区域 - 手机端优化 */}
                 <div className="p-3 sm:p-6 bg-gradient-to-t from-white/60 to-transparent">
-                    {/* 建议操作按钮 - 手机端更紧凑 */}
-                    <div className="flex flex-wrap gap-2 mb-3 sm:mb-4 justify-center">
-                        {suggestedActions.map((action, i) => (
-                            <button 
-                                key={i} 
-                                onClick={() => onAction(action)} 
-                                disabled={isLoading} 
-                                className="bg-white/80 hover:bg-pink-50 active:bg-pink-100 text-pink-600/90 py-2 sm:py-2.5 px-4 sm:px-5 rounded-full text-xs sm:text-sm font-bold shadow-sm border border-pink-100 active:scale-95 disabled:opacity-50 touch-manipulation"
-                            >
-                                {action}
-                            </button>
-                        ))}
-                    </div>
-                    
                     {/* 输入框 - 手机端更大更易点击 */}
                     <div className="flex items-center gap-2 bg-white rounded-full px-2 sm:px-2 py-2 sm:py-2 shadow-lg shadow-pink-100/50 border border-pink-50">
                         <input 

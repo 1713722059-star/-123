@@ -127,47 +127,38 @@ export const useGameTime = () => {
     setGameTimeState((prev) => advanceTime(prev, minutes));
   }, []);
 
-  // 跳过今天（跳到明天同一时间）
+  // 跳过今天（跳到第二天早上7点）
   const skipToday = useCallback(() => {
     setGameTimeState((prev) => {
-      const tomorrow = advanceTime(
-        prev,
-        24 * 60 - (prev.hour * 60 + prev.minute)
-      );
+      const tomorrow = advanceTime(prev, 1 * 24 * 60);
       return {
         ...tomorrow,
-        hour: prev.hour,
-        minute: prev.minute,
+        hour: 7, // 跳到第二天早上7点
+        minute: 0,
       };
     });
   }, []);
 
-  // 跳过两天
+  // 跳过两天（跳到第三天早上7点）
   const skipTwoDays = useCallback(() => {
     setGameTimeState((prev) => {
-      const afterTwoDays = advanceTime(
-        prev,
-        2 * 24 * 60 - (prev.hour * 60 + prev.minute)
-      );
+      const afterTwoDays = advanceTime(prev, 2 * 24 * 60);
       return {
         ...afterTwoDays,
-        hour: prev.hour,
-        minute: prev.minute,
+        hour: 7, // 跳到第三天早上7点
+        minute: 0,
       };
     });
   }, []);
 
-  // 跳过一周
+  // 跳过一周（跳到第八天早上7点）
   const skipWeek = useCallback(() => {
     setGameTimeState((prev) => {
-      const afterWeek = advanceTime(
-        prev,
-        7 * 24 * 60 - (prev.hour * 60 + prev.minute)
-      );
+      const afterWeek = advanceTime(prev, 7 * 24 * 60);
       return {
         ...afterWeek,
-        hour: prev.hour,
-        minute: prev.minute,
+        hour: 7, // 跳到第八天早上7点
+        minute: 0,
       };
     });
   }, []);
