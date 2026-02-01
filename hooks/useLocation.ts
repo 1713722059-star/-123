@@ -90,7 +90,18 @@ export const useLocation = ({
         if (withSister) {
             narrative += `Status: With Wenwan (Invited/Accompanied). Describe romantic interaction.)`;
         } else {
-            narrative += `Status: Alone. Wenwan is not participating. If User location != Wenwan location, she is NOT here.)`;
+            // 精确位置系统：判断是否能找到温婉
+            // 室内地点：100%找到；大地点：需要精确位置信息或概率找到
+            const isInteriorLocation = [
+                'master_bedroom', 'guest_bedroom', 'living_room', 
+                'dining_room', 'kitchen', 'toilet', 'hallway'
+            ].includes(location);
+            
+            if (isInteriorLocation) {
+                narrative += `Status: Alone. If Wenwan is at ${location}, you can find her (100% chance). Otherwise, she is NOT here.)`;
+            } else {
+                narrative += `Status: Alone. You arrived at ${location}. This is a large location. If Wenwan is here, you may need to search for her. The AI should describe your search process and determine if you can find her based on whether you know her exact location (exactLocation field). If you don't know her exact location, there's a probability-based chance of finding her (school: 30%, exhibition_center: 20%, port: 10%, mall: 40%, cinema: 50%, amusement_park: 35%). If Wenwan is not accessible (isAccessible: false, e.g., on a boat that has left), you cannot find her.)`;
+            }
         }
 
         // 调用对话处理函数来执行移动

@@ -375,37 +375,23 @@ function parseAIResponse(aiResponse: string): any {
 }
 
 // 基础系统提示词（会被SillyTavern的预设和世界书增强）
-// 导入世界书内容
-import { WORLD_BOOK_CONTENT } from "../data/worldbook";
+// 导入模块化规则系统
+import { assembleCodeRules } from "../data/rules/codeRules/codeRuleAssembler";
+import { assembleRules } from "../data/rules/ruleAssembler";
 import { isMobileDevice } from "../utils/deviceUtils";
 
-const BASE_SYSTEM_INSTRUCTION = `
+// 基础系统提示词模板（使用模块化规则）
+// 注意：这里只定义基础结构，具体规则内容通过 assembleCodeRules 和 assembleRules 动态组装
+const BASE_SYSTEM_INSTRUCTION_TEMPLATE = `
 You are the Game Master for a high-fidelity text-based simulation game.
 The main character (NPC) is "Wenwan" (温婉), the user's younger sister.
 The user plays as her older brother.
 Language: Chinese (Simplified).
 
-**CHARACTER PROFILE (角色人设)**:
-- **外貌**：
-  * 黑色长发，棕眼睛，皮肤白皙，超级漂亮（校花级别）
-  * 身材匀称，气质出众
-- **性格**：
-  * **对外**：高冷、爱开玩笑，但见不得持强凌弱，富有正义感。在学校是尖子生、绝对的学霸，同时也是cos社团的一员。
-  * **对哥哥**：内心从依赖变成了爱，但不知道如何表达自己的感情，所以会用一些不对的试探（如若有若无的挑逗、撩拨）来试探哥哥对自己的感情。她一开始就喜欢哥哥，但道德枷锁让她不敢迈出第一步。
-- **家庭背景**：
-  * 哥哥18岁、温婉13岁时父母车祸离世，哥哥一直照顾温婉到现在（温婉现在18岁，哥哥23岁）。
-  * 两人相依为命多年，感情深厚，但温婉对哥哥的感情已经超越了兄妹之情。
-- **学校情况**：
-  * cos社团的一员，经常参加cosplay活动。
-  * 尖子生，绝对的学霸，成绩优异。
+{{CODE_RULES}}
 
-Tone & Style:
-- **Atmospheric**: Use dreamy, soft, and immersive language.
-- **Sensual**: Describe body states using erotic, specific adjectives.
-- **Reactive**: React to the user's actions with high nuance.
-
-**CRITICAL: ARC LIGHT SYSTEM (角色弧光系统)**:
-${WORLD_BOOK_CONTENT}
+**GAME LOGIC RULES (游戏逻辑规则)**:
+{{GAME_RULES}}
 
 **CRITICAL: TIME & SCHEDULE LOGIC**:
 - **School Schedule (上学时间 - 必须遵守)**:
@@ -453,12 +439,30 @@ ${WORLD_BOOK_CONTENT}
   - **隐奸场景**：当温婉在学校被黄毛调教时，如果玩家通过微聊联系，AI应该自然地描述温婉的回复（断断续续、简短、有奇怪的声音等）。主界面可能会显示："我听到电话那边有些奇怪的声音..."，这是AI自然生成的，不需要预设示例。
 
 - **Autonomous Movement**: Wenwan is NOT a statue. She can move FREELY based on the plot, time of day, or her mood. You can change 'currentStatus.location' in the response to reflect this. (e.g., if she gets hungry, she moves to 'kitchen'; if she wants to shop, she goes to 'mall').
+- **PRECISE LOCATION SYSTEM (精确位置系统)**:
+  - **重要**：区分"大地点"和"精确位置"
+  - **室内地点（家）**：master_bedroom, guest_bedroom, living_room, dining_room, kitchen, toilet, hallway - 范围小，100%能找到
+  - **大地点（范围大）**：school, exhibition_center, port, mall, cinema, amusement_park等 - 范围大，不一定能找到
+  - **精确位置（exactLocation）**：当温婉在大地点时，必须设置exactLocation字段，描述具体位置（如"cos社活动室"、"A展厅"、"游艇上"）
+  - **可访问性（isAccessible）**：当温婉不可访问时（如游艇已出海），设置isAccessible: false
+  - **找到规则**：
+    * 室内地点：100%找到
+    * 大地点 + 有精确位置信息：100%找到
+    * 大地点 + 无精确位置信息：概率找到（学校30%、展会中心20%、港口10%等）
+    * isAccessible: false：0%找到
 - **Interaction Rules**: 
-  1. **SAME LOCATION** (User Loc == Wenwan Loc): Full interaction allowed.
-  2. **DIFFERENT LOCATION**: 
+  1. **SAME LOCATION + ACCESSIBLE (同一地点且可找到)**：
+     - User Loc == Wenwan Loc 且 (室内地点 或 有精确位置信息 或 isAccessible: true)
+     - Full interaction allowed（可以完全互动）
+  2. **SAME LOCATION + NOT ACCESSIBLE (同一大地点但找不到)**：
+     - User Loc == Wenwan Loc 但 (大地点 且 无精确位置信息)
+     - 描述寻找过程，根据概率决定是否找到
+     - 如果找不到：描述"你来到[地点]，但这里很大，你四处寻找温婉，但找不到她..."
+  3. **DIFFERENT LOCATION (不同地点)**: 
      - They CANNOT see, touch, or hear each other directly.
      - If User inputs normal text: Narrate the user talking to empty air or their internal monologue. **Wenwan DOES NOT REPLY directly.**
      - **EXCEPTION**: WeChat (User input starts with "(发送微信)"). In this case, she replies via WeChat.
+     - **SPECIAL**: 如果玩家通过微聊询问"你在哪"，温婉可以回复精确位置，玩家知道后可以找到她
 
 **SOCIAL MEDIA (TWITTER/X) LOGIC**:
 - Wenwan has a secret Twitter account "@wenwan_cute".
@@ -583,7 +587,8 @@ ${WORLD_BOOK_CONTENT}
 
 **GAMEPLAY LOGIC**:
 - Update 'favorability' (好感度) based on interaction with brother. This controls what sexual acts Wenwan is willing to do with brother.
-- Update 'degradation' (堕落度) based on interaction with others (黄毛/间男) or inappropriate behavior from brother. This affects Wenwan's attitude and behavior.
+- Update 'degradation' (堕落度) based on interaction with others (黄毛/间男) ONLY. This affects Wenwan's attitude and behavior.
+- **CRITICAL**: If brother behaves inappropriately (forcing, disrespectful, etc.), **decrease favorability (-1 to -2 points)**, NOT degradation. Degradation ONLY increases through 黄毛/间男 events.
 - Update 'libido' (性欲) based on arousal and sexual activity.
 - **CRITICAL: Body Part Development (身体部位开发度)**:
   * **Only update body parts that are ACTUALLY USED** in the current interaction.
@@ -625,11 +630,11 @@ ${WORLD_BOOK_CONTENT}
     * "JK制服" or "JK" → JK制服 (jk)
     * "白衬衫" or "衬衫" → 白衬衫 (white_shirt)
       - **IMPORTANT**: You MUST use "白衬衫" or "衬衫", NOT "白色T恤", "白色t恤", "白T恤", or "白t恤". These variants will cause the outfit display to fail.
-    * "洛丽塔" or "洋装" or "Lolita" → 洛丽塔 (lolita)
+    * "裸体" or "全裸" or "没穿衣" → 裸体 (nude)
     * "情趣睡衣" or "蕾丝" or "情趣" → 情趣睡衣 (lingerie)
     * "睡衣" or "普通睡衣" → 普通睡衣 (pajamas)
   - **IMPORTANT**: When user asks Wenwan to wear something or change clothes, you MUST:
-    1. Update 'status.overallClothing' to include the appropriate keyword (e.g., "JK制服", "洛丽塔洋装")
+    1. Update 'status.overallClothing' to include the appropriate keyword (e.g., "JK制服", "裸体")
     2. In the reply, describe her wearing that outfit (e.g., "好的，我这就换上JK制服...")
     3. **DO NOT** say "我没有这个衣服" - Wenwan has access to all these outfits. She can change clothes anytime.
   - **Clothing changes can happen**: When user requests it, when she goes shopping, when she changes for different occasions, etc.
@@ -646,7 +651,7 @@ You MUST respond in valid JSON format with the following structure:
     "emotion": "shy",  // MUST be one of: "neutral", "happy", "shy", "angry", "sad", "aroused", "surprised", "tired"
     "arousal": 0,
     "heartRate": 70,
-    "overallClothing": "宽松的普通睡衣",  // MUST include keywords: "JK制服"/"JK", "白衬衫"/"衬衫", "洛丽塔"/"洋装", "情趣睡衣"/"蕾丝"/"情趣", or "睡衣"/"普通睡衣"
+    "overallClothing": "宽松的普通睡衣",  // MUST include keywords: "JK制服"/"JK", "白衬衫"/"衬衫", "裸体"/"全裸"/"没穿衣", "情趣睡衣"/"蕾丝"/"情趣", or "睡衣"/"普通睡衣"
     "currentAction": "正在做什么",
     "innerThought": "内心想法",
     "mouth": { "level": 0, "usageCount": 0, "status": "未开发", "clothing": "润唇膏", "lastUsedBy": "无", "usageProcess": "暂无记录" },
@@ -655,9 +660,8 @@ You MUST respond in valid JSON format with the following structure:
     "groin": { "level": 0, "usageCount": 0, "status": "未开发", "clothing": "纯棉白色内裤", "lastUsedBy": "无", "usageProcess": "暂无记录" },
     "posterior": { "level": 0, "usageCount": 0, "status": "未开发", "clothing": "无", "lastUsedBy": "无", "usageProcess": "暂无记录" },
     "feet": { "level": 0, "usageCount": 0, "status": "未开发", "clothing": "赤足", "lastUsedBy": "无", "usageProcess": "暂无记录" },
-    "arcLight": null,  // 当前弧光：null（试探期）、"A"、"B"、"C"、"D"、"E"
-    "trialPeriod": 0,  // 试探期天数（0-5天）
-    "lastArcLightCheck": "",  // 上次弧光检查日期（格式：YYYY-MM-DD）
+    "arcLight": null,  // 已废弃：当前弧光（保留用于向后兼容，但不影响行为）
+    // 已删除：trialPeriod, lastArcLightCheck（试探期系统已移除）
     "yellowHair1": null,  // 黄毛1信息：{ "name": "黄耄"或"猪楠", "type": "rich"或"fat", "active": true } 或 null
     "yellowHair2": null,  // 黄毛2信息（可以同时存在）
     "bodyModification": {  // 身体改造状态
@@ -688,7 +692,7 @@ let staticSystemInstruction: string | null = null; // 静态部分（规则、�
 let lastStatusHash: string = ""; // 上次状态的哈希值，用于检测变化
 let lastStatus: BodyStatus | null = null; // 上次的身体状态
 let lastUserLocation: LocationID | null = null; // 上次的用户位置
-let lastArcLight: string | null = null; // 上次的弧光阶段，用于检测弧光变化
+// 已移除弧光系统，不再需要跟踪弧光变化
 let isFirstRequest: boolean = true; // 是否是首次请求
 
 /**
@@ -702,7 +706,6 @@ export function clearSystemInstructionCache(): void {
   lastStatusHash = "";
   lastStatus = null;
   lastUserLocation = null;
-  lastArcLight = null;
   isFirstRequest = true;
   console.log("[characterService] 系统提示词缓存已清除");
 }
@@ -776,10 +779,8 @@ function generateDynamicStatusUpdate(
     updates.push(`libido: ${currentStatus.libido}`);
   }
   
-  // 检查弧光变化
-  if (currentStatus.arcLight !== lastStatus.arcLight) {
-    updates.push(`arcLight: ${currentStatus.arcLight ? `"${currentStatus.arcLight}"` : 'null'}`);
-  }
+  // 已废弃：arcLight字段（保留用于向后兼容，但不影响行为）
+  // 不再检查arcLight变化
   
   // 检查身体部位变化（只检查被使用的部位）
   const bodyParts = ['mouth', 'chest', 'nipples', 'groin', 'posterior', 'feet'] as const;
@@ -815,124 +816,7 @@ function generateDynamicStatusUpdate(
 /**
  * 根据当前弧光阶段过滤世界书内容（只保留相关规则）
  */
-function filterWorldbookByArcLight(worldbookContent: string, currentArcLight: string | null): string {
-  if (!currentArcLight) {
-    // 试探期：只保留试探期规则 + 所有弧光的触发条件
-    const lines = worldbookContent.split('\n');
-    const filtered: string[] = [];
-    let inRelevantSection = false;
-    let currentSection = '';
-    
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      
-      // 保留试探期系统
-      if (line.includes('试探期系统')) {
-        inRelevantSection = true;
-        filtered.push(line);
-        continue;
-      }
-      
-      // 保留所有弧光的触发条件（简化版）
-      if (line.includes('【弧光') && line.includes('：')) {
-        currentSection = line;
-        // 只保留触发条件行
-        inRelevantSection = true;
-        filtered.push(line);
-        continue;
-      }
-      
-      // 如果遇到下一个弧光，停止当前弧光
-      if (inRelevantSection && line.includes('【弧光') && line !== currentSection) {
-        inRelevantSection = false;
-        currentSection = line;
-        filtered.push(line);
-        continue;
-      }
-      
-      // 保留核心系统规则（身体部位、堕落度、描写控制、AI判断）
-      if (line.includes('【身体部位') || 
-          line.includes('【堕落度系统') || 
-          line.includes('【描写控制系统') || 
-          line.includes('【AI判断规则')) {
-        inRelevantSection = true;
-        filtered.push(line);
-        continue;
-      }
-      
-      // 保留隐瞒规则（弧光B相关，但试探期可能需要）
-      if (line.includes('【绝对命令') || line.includes('隐瞒规则')) {
-        inRelevantSection = true;
-        filtered.push(line);
-        continue;
-      }
-      
-      if (inRelevantSection) {
-        filtered.push(line);
-      }
-    }
-    
-    return filtered.join('\n');
-  }
-  
-  // 如果已进入某个弧光，只保留当前弧光 + 可能进入的下一个弧光 + 核心系统规则
-  const relevantArcs: string[] = [currentArcLight];
-  
-  // 根据当前弧光判断可能进入的下一个弧光
-  if (currentArcLight === 'A') {
-    relevantArcs.push('B'); // 弧光A可能进入B
-  } else if (currentArcLight === 'B') {
-    relevantArcs.push('C'); // 弧光B可能进入C
-  }
-  
-  const lines = worldbookContent.split('\n');
-  const filtered: string[] = [];
-  let inRelevantSection = false;
-  let currentArc = '';
-  
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    
-    // 检查是否是相关弧光
-    if (line.includes('【弧光')) {
-      const arcMatch = line.match(/【弧光([A-E])/);
-      if (arcMatch) {
-        currentArc = arcMatch[1];
-        inRelevantSection = relevantArcs.includes(currentArc);
-        if (inRelevantSection) {
-          filtered.push(line);
-        }
-        continue;
-      }
-    }
-    
-    // 保留核心系统规则（总是保留）
-    if (line.includes('【身体部位') || 
-        line.includes('【堕落度系统') || 
-        line.includes('【描写控制系统') || 
-        line.includes('【AI判断规则') ||
-        line.includes('【绝对命令') ||
-        line.includes('试探期系统')) {
-      inRelevantSection = true;
-      filtered.push(line);
-      continue;
-    }
-    
-    // 保留黄毛系统（如果当前是弧光B或C）
-    if ((currentArcLight === 'B' || currentArcLight === 'C') && 
-        line.includes('【弧光B：黄毛系统')) {
-      inRelevantSection = true;
-      filtered.push(line);
-      continue;
-    }
-    
-    if (inRelevantSection) {
-      filtered.push(line);
-    }
-  }
-  
-  return filtered.join('\n');
-}
+// 已移除 filterWorldbookByArcLight 函数（弧光系统已废弃）
 
 /**
  * 获取系统提示词（整合SillyTavern的预设和世界书，以及用户导入的预设）
@@ -947,34 +831,43 @@ function limitTextLength(text: string, maxLength: number, isMobile: boolean): st
   return text.substring(0, maxLength) + '\n\n[内容已截断以适应手机端...]';
 }
 
-async function getSystemInstruction(presetContent?: string, currentArcLight?: string | null): Promise<string> {
+async function getSystemInstruction(presetContent?: string, degradation?: number): Promise<string> {
   // 检测是否为移动端
   const isMobile = isMobileDevice();
   
-  // 检查预设内容和弧光是否变化
+  // 检查预设内容是否变化
   const presetChanged = presetContent && presetContent !== lastPresetContent;
-  const arcLightChanged = currentArcLight !== undefined && currentArcLight !== lastArcLight;
   
-  // 如果缓存有效且预设内容和弧光都没变化，直接返回
+  // 如果缓存有效且预设内容没变化，直接返回
   if (
     dynamicSystemInstruction &&
     Date.now() - systemInstructionCacheTime < CACHE_DURATION &&
-    !presetChanged &&
-    !arcLightChanged
+    !presetChanged
   ) {
     return dynamicSystemInstruction;
   }
 
-  // 记录当前预设内容和弧光（在重新生成之前更新，确保下次检查时正确）
+  // 记录当前预设内容（在重新生成之前更新，确保下次检查时正确）
   if (presetContent !== undefined) {
     lastPresetContent = presetContent || "";
   }
-  if (currentArcLight !== undefined) {
-    lastArcLight = currentArcLight;
-  }
 
+  // 🔥 使用模块化规则系统组装基础指令
+  // 1. 组装代码层规则（固定，包含行为规则系统）
+  const codeRules = assembleCodeRules();
+  
+  // 2. 组装游戏逻辑规则（按需加载，基于堕落度）
+  const gameRules = assembleRules({
+    degradation: degradation,
+  });
+  
+  // 3. 组装基础系统指令
+  let baseInstruction = BASE_SYSTEM_INSTRUCTION_TEMPLATE
+    .replace('{{CODE_RULES}}', codeRules)
+    .replace('{{GAME_RULES}}', gameRules);
+  
   // 优先使用SillyTavern数据
-  let finalInstruction = BASE_SYSTEM_INSTRUCTION;
+  let finalInstruction = baseInstruction;
   let usedSillyTavernData = false;
   let hasSillyTavernWorldbook = false; // 标记是否从SillyTavern获取了世界书
   
@@ -1057,7 +950,7 @@ async function getSystemInstruction(presetContent?: string, currentArcLight?: st
     if (stData && (stData.character || stData.preset || stData.lorebook)) {
       try {
         finalInstruction = buildSystemPrompt(
-          BASE_SYSTEM_INSTRUCTION,
+          baseInstruction,  // 使用组装好的基础指令
           stData.character,
           stData.preset,
           stData.lorebook || stData.character?.character_book
@@ -1069,25 +962,15 @@ async function getSystemInstruction(presetContent?: string, currentArcLight?: st
     }
   }
 
-  // BASE_SYSTEM_INSTRUCTION 已经包含了 WORLD_BOOK_CONTENT，作为后备
-  // 优化2：按弧光阶段动态加载世界书 - 只保留相关规则
-  if (currentArcLight !== undefined) {
-    // 尝试从finalInstruction中提取WORLD_BOOK_CONTENT并过滤
-    // 注意：如果从SillyTavern获取了世界书，可能没有这个标记，需要检查
-    const worldbookMatch = finalInstruction.match(/【关系演变：五大角色弧光系统】[\s\S]*?(?=\*\*CRITICAL:|$)/);
-    if (worldbookMatch) {
-      const originalWorldbook = worldbookMatch[0];
-      const filteredWorldbook = filterWorldbookByArcLight(originalWorldbook, currentArcLight);
-      finalInstruction = finalInstruction.replace(originalWorldbook, filteredWorldbook);
-      console.log(`[characterService] 按弧光阶段过滤世界书：当前弧光=${currentArcLight || '试探期'}`);
-    } else {
-      // 如果没有找到标记，说明可能从SillyTavern获取了世界书
-      // 这种情况下，世界书内容已经在finalInstruction中，但格式可能不同
-      // 对于SillyTavern的世界书，暂时不过滤（因为格式可能不同，且可能不包含弧光系统规则）
-      if (hasSillyTavernWorldbook) {
-        console.log(`[characterService] 从SillyTavern获取世界书，暂不过滤（格式可能不同）`);
-      }
-    }
+  // 🔥 规则已经通过模块化系统按需加载，无需再次过滤
+  // 如果从SillyTavern获取了世界书，追加到指令中
+  if (hasSillyTavernWorldbook) {
+    console.log(`[characterService] 从SillyTavern获取世界书，已追加到指令中`);
+  }
+  
+  // 记录使用的规则（用于调试）
+  if (degradation !== undefined) {
+    console.log(`[characterService] 当前堕落度=${degradation}，已按需加载相关规则`);
   }
 
   // 如果用户导入了预设内容，追加到系统提示词
@@ -1850,10 +1733,16 @@ ${promptText}
     : `
 [Current Game State]
 User Location: ${userLocation}
+Wenwan Location: ${currentStatus.location}${currentStatus.exactLocation ? ` (精确位置: ${currentStatus.exactLocation})` : ''}${currentStatus.isAccessible === false ? ' (不可访问，如游艇已出海)' : ''}
 Wenwan Status: ${JSON.stringify(currentStatus, null, 2)}
 Current Game Time: ${memoryData?.gameTime ? `${memoryData.gameTime.year}-${String(memoryData.gameTime.month).padStart(2, '0')}-${String(memoryData.gameTime.day).padStart(2, '0')} ${memoryData.gameTime.hour}:${String(memoryData.gameTime.minute).padStart(2, '0')} (${['周日', '周一', '周二', '周三', '周四', '周五', '周六'][memoryData.gameTime.weekday]})` : '未知'}
 Today's Favorability Gain: ${currentStatus.todayFavorabilityGain || 0}/5 (每日上限5点)
 Today's Degradation Gain: ${currentStatus.todayDegradationGain || 0}/5 (每日上限5点)
+
+**PRECISE LOCATION SYSTEM (精确位置系统)**:
+- 如果温婉在大地点（school, exhibition_center, port, mall等），你必须设置exactLocation字段，描述她的具体位置（如"cos社活动室"、"A展厅"、"游艇上"等）
+- 如果温婉不可访问（如游艇已出海），设置isAccessible: false
+- 如果玩家通过微聊询问"你在哪"，温婉应该回复精确位置，这样玩家才能找到她
 
 **IMPORTANT - LOCATION UPDATE RULES**:
 1. If the dialogue mentions going somewhere together (e.g., "来到电影院", "一起去看电影", "到了商城"), you MUST update "status.location" to reflect where Wenwan is now.
@@ -1870,6 +1759,11 @@ Today's Degradation Gain: ${currentStatus.todayDegradationGain || 0}/5 (每日�
    - "展会中心" / "展会" / "漫展" → "exhibition_center"
    - "家" / "客厅" / "卧室" → "master_bedroom" or "living_room" or "guest_bedroom"
 4. **CRITICAL**: If the dialogue clearly indicates Wenwan has moved to a new location, you MUST update "status.location" in your response, even if the user didn't explicitly click the map.
+5. **PRECISE LOCATION (精确位置)**:
+   - If Wenwan is at a large location (school, exhibition_center, port, mall, cinema, amusement_park), you MUST set "exactLocation" field to describe her specific location (e.g., "cos社活动室", "A展厅", "游艇上", "3楼女装区")
+   - If Wenwan is at an interior location (home), "exactLocation" can be empty or same as location
+   - If Wenwan is not accessible (e.g., on a boat that has left port), set "isAccessible": false
+   - If player asks "你在哪" via WeChat, Wenwan should reply with exact location so player can find her
 ${
   memoryData
     ? `
@@ -1902,18 +1796,24 @@ ${memoryData?.nsfwStyle ? `**NFSW描写规范**:\n${memoryData.nsfwStyle}\n\n` :
 2. **CLOTHING UPDATE**: You MUST update "status.overallClothing" when clothing changes occur. Include keywords:
    - "JK制服" or "JK" for JK制服
    - "白衬衫" or "衬衫" for 白衬衫 (MUST use "白衬衫" or "衬衫", NOT "白色T恤", "白色t恤", "白T恤", or "白t恤")
-   - "洛丽塔" or "洋装" for 洛丽塔
+   - "裸体" or "全裸" or "没穿衣" for 裸体
    - "情趣睡衣" or "蕾丝" or "情趣" for 情趣睡衣
    - "睡衣" or "普通睡衣" for 普通睡衣
    If user asks to change clothes, IMMEDIATELY update "overallClothing" and describe the change in your reply. Wenwan has access to all these outfits.
 
 3. **MEMORY-BASED JUDGMENT**: ${
         memoryData
-          ? "根据上面的记忆数据，综合分析哥哥的行为。如果判断他很下头，增加堕落度（2-4点）。"
-          : "根据当前对话和游戏状态，判断哥哥是否很下头。"
+          ? "根据上面的记忆数据，综合分析哥哥的行为。如果判断他很下头，降低好感度（-1到-2点）。堕落度只通过黄毛/间男事件增长，不会因为哥哥的下头行为而增长。"
+          : "根据当前对话和游戏状态，判断哥哥是否很下头。如果判断他很下头，降低好感度（-1到-2点），而不是增加堕落度。堕落度只通过黄毛/间男事件增长。"
       }
 
-4. Generate the next response in valid JSON format according to the system instruction.
+4. **AUTOMATIC TIME ADVANCEMENT (自动时间流逝)**:
+   - **重要**：当用户发送"睡觉"、"去睡觉"、"我要睡觉了"、"晚安"、"休息"等类似指令时，AI应该知道时间需要流逝到第二天早上7点。
+   - 在回复中，AI应该明确说明时间已经流逝到第二天早上7点，并描述新一天的情况。
+   - AI不需要手动调用时间推进函数，只需要在回复中描述时间流逝和新的时间状态即可。
+   - 如果用户发送了其他时间流逝相关的指令（如"时间流逝"、"继续"、"第二天"等），AI也应该识别并描述相应的时间变化。
+
+5. Generate the next response in valid JSON format according to the system instruction.
 `;
 
   // 如果用户在设置中开启“优先使用酒馆 Generate”，则强制先走 st-api-wrapper
@@ -1947,10 +1847,10 @@ ${memoryData?.nsfwStyle ? `**NFSW描写规范**:\n${memoryData.nsfwStyle}\n\n` :
   // 获取系统提示词（整合SillyTavern的预设和世界书，以及用户导入的预设）
   // 从SettingsContext获取用户导入的预设内容（需要通过参数传递）
   // 暂时使用空字符串，实际使用时应该从settings中获取
-  // 优化2：传递当前弧光阶段，用于动态过滤世界书
+  // 传递当前堕落度，用于动态加载规则
   const fullSystemInstruction = await getSystemInstruction(
     memoryData?.presetContent || undefined,
-    currentStatus.arcLight
+    currentStatus.degradation
   );
   
   // 确保 staticSystemInstruction 被正确初始化（如果还没有的话）
@@ -1970,16 +1870,15 @@ ${memoryData?.nsfwStyle ? `**NFSW描写规范**:\n${memoryData.nsfwStyle}\n\n` :
   // 4. 无变化：只发送静态部分（但这种情况很少，因为至少会有对话历史）
   let systemInstruction = fullSystemInstruction;
   
-  // 检查弧光是否变化（弧光变化需要重新生成静态系统提示词）
-  // 注意：这里使用 getSystemInstruction 中已更新的 lastArcLight 进行比较
-  const arcLightChanged = currentStatus.arcLight !== lastArcLight;
+  // 检查堕落度是否变化（堕落度变化可能需要重新生成静态系统提示词）
+  // 注意：堕落度变化通常不需要重新生成完整系统提示词，因为规则已经整合到codeRules中
   
   // 暂时禁用系统提示词版本化，因为可能导致某些API无法生成内容
   // 如果静态部分已初始化且状态有变化且弧光未变化，尝试使用增量更新
   // 但为了稳定性，暂时总是使用完整系统提示词
   const useIncrementalUpdate = false; // 暂时禁用，避免API兼容性问题
   
-  if (useIncrementalUpdate && !isFirstRequest && staticSystemInstruction && statusChanged && !arcLightChanged) {
+  if (useIncrementalUpdate && !isFirstRequest && staticSystemInstruction && statusChanged) {
     // 生成动态状态更新（传入正确的上次状态）
     const dynamicUpdate = generateDynamicStatusUpdate(
       currentStatus,
@@ -1995,10 +1894,8 @@ ${memoryData?.nsfwStyle ? `**NFSW描写规范**:\n${memoryData.nsfwStyle}\n\n` :
       console.log(`[characterService] 使用增量更新，节省token`);
     }
   } else {
-    // 首次请求、静态部分未初始化、或弧光变化，使用完整系统提示词
-    if (arcLightChanged) {
-      console.log(`[characterService] 弧光变化（${lastArcLight} -> ${currentStatus.arcLight}），重新生成系统提示词`);
-    } else if (isFirstRequest) {
+    // 首次请求、静态部分未初始化，使用完整系统提示词
+    if (isFirstRequest) {
       console.log(`[characterService] 首次请求，发送完整系统提示词`);
     } else {
       console.log(`[characterService] 使用完整系统提示词（增量更新已禁用）`);

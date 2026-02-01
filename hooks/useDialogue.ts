@@ -357,8 +357,24 @@ export const useDialogue = ({
 
     let promptText = actionText;
     const isWeChatMessage = actionText.startsWith("(发送微信)");
-    const isRemoteWeChat =
-      isWeChatMessage && userLocation !== bodyStatus.location;
+    
+    // 精确位置系统：判断是否为远程互动（不能直接找到温婉）
+    // 1. 不同大地点：肯定是远程
+    // 2. 同一大地点但无精确位置信息：可能是远程（概率性找到）
+    // 3. 同一大地点且有精确位置信息：不是远程（可以找到）
+    // 4. 室内地点：同一地点就能找到
+    const isInteriorLocation = [
+      'master_bedroom', 'guest_bedroom', 'living_room', 
+      'dining_room', 'kitchen', 'toilet', 'hallway'
+    ].includes(userLocation);
+    const isLargeLocation = !isInteriorLocation;
+    
+    // 判断是否为远程互动
+    const isRemoteWeChat = isWeChatMessage && (
+      userLocation !== bodyStatus.location || // 不同大地点
+      (isLargeLocation && userLocation === bodyStatus.location && !bodyStatus.exactLocation) || // 同一大地点但无精确位置
+      (bodyStatus.isAccessible === false) // 不可访问（如游艇已出海）
+    );
 
     // 如果发送微信消息时在同一位置，添加特殊提示
     if (isWeChatMessage && userLocation === bodyStatus.location) {
@@ -769,32 +785,8 @@ export const useDialogue = ({
         }
       }
 
-      // 检查是否发生了NTR事件（堕落度增长）
-      const degradationChange = response.status.degradation - bodyStatus.degradation;
-      const isNTREvent = degradationChange > 0;
-      
-      // 处理生成的推特
-      // **重要**：如果发生了NTR事件，必须生成推特（即使AI没有返回generatedTweet）
-      if (isNTREvent && (!response.generatedTweet || !response.generatedTweet.content)) {
-        // NTR事件发生但AI没有生成推特，强制生成一个占位推特
-        // 注意：这只是一个占位，实际应该由AI生成内容
-        const ntrTweet: Tweet = {
-          id: Date.now().toString(),
-          author: "婉婉酱_Ovo",
-          handle: "@wenwan_cute",
-          avatar: avatarUrl,
-          content: `（发生了NTR事件，堕落度增长了${degradationChange}点，但AI未生成推特内容。系统提示词已要求AI在NTR事件时必须生成推特。）`,
-          hasImage: false,
-          imageDescription: "",
-          likes: 0,
-          retweets: 0,
-          time: "刚刚",
-          isPrivate: false,
-          comments: 0,
-        };
-        setTweets((prev) => [ntrTweet, ...prev]);
-        console.warn(`[useDialogue] NTR事件发生（堕落度增长${degradationChange}点）但AI未生成推特，已强制生成占位推特`);
-      } else if (response.generatedTweet && response.generatedTweet.content) {
+      // 处理生成的推特（如果AI生成了推特）
+      if (response.generatedTweet && response.generatedTweet.content) {
         const newTweet: Tweet = {
           id: Date.now().toString(),
           author: "婉婉酱_Ovo",

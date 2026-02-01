@@ -296,10 +296,12 @@ const AppContent: React.FC = () => {
     groin: { level: 0, usageCount: 0, status: "未开发", clothing: "纯棉白色内裤", lastUsedBy: "无", usageProcess: "暂无记录" },
     posterior: { level: 0, usageCount: 0, status: "未开发", clothing: "无", lastUsedBy: "无", usageProcess: "暂无记录" },
     feet: { level: 0, usageCount: 0, status: "未开发", clothing: "赤足", lastUsedBy: "无", usageProcess: "暂无记录" },
+    // 新增：精确位置系统
+    exactLocation: undefined, // 精确位置（大地点时需要，如"cos社活动室"、"A展厅"等）
+    isAccessible: true, // 是否可被找到（默认true，如游艇已出海则false）
     // 新增：弧光系统（初始为null，处于试探期）
     arcLight: null,
-    trialPeriod: 0, // 试探期从0开始计数
-    lastArcLightCheck: '', // 初始为空，第一次检查时设置
+    // 已删除：trialPeriod, lastArcLightCheck（试探期系统已移除）
     // 新增：黄毛系统（初始为空）
     yellowHair1: null,
     yellowHair2: null,
@@ -620,15 +622,7 @@ const AppContent: React.FC = () => {
     const newTime = calculateSkippedTime(gameTime, 1);
     skipToday(); // 跳到第二天早上7点（原来是skipTwoDays，现在改为skipToday，推进1天）
     
-    // 跳过三天时，好感度减3
-    setBodyStatus(prev => {
-      const newFavorability = Math.max(0, prev.favorability - 3); // 确保不低于0
-      console.log(`[handleSkipTwoDays] 跳过三天，好感度减少: ${prev.favorability} → ${newFavorability}`);
-      return {
-        ...prev,
-        favorability: newFavorability
-      };
-    });
+    // 跳过1天不减少好感度（只有跳过3天才减少）
     
     // 使用 handleAction 生成AI剧情
     await handleAction(`(System: 时间已经流逝了1天，现在是${newTime.year}年${newTime.month}月${newTime.day}日的早上7点。生成一段剧情描述，描述这1天里发生的事情，以及现在（第二天早上）的情况。温婉在哪里、在做什么、心情如何。就像描述"前往电影院"一样，生成完整的剧情场景。)`, true);
@@ -657,6 +651,16 @@ const AppContent: React.FC = () => {
     updatedTime.minute = 0;
     updatedTime.weekday = (updatedTime.weekday + 3) % 7;
     setGameTime(updatedTime);
+    
+    // 跳过3天时，好感度减3
+    setBodyStatus(prev => {
+      const newFavorability = Math.max(0, prev.favorability - 3); // 确保不低于0
+      console.log(`[handleSkipWeek] 跳过3天，好感度减少: ${prev.favorability} → ${newFavorability}`);
+      return {
+        ...prev,
+        favorability: newFavorability
+      };
+    });
     
     // 使用 handleAction 生成AI剧情
     await handleAction(`(System: 时间已经流逝了3天，现在是${newTime.year}年${newTime.month}月${newTime.day}日的早上7点。生成一段剧情描述，描述这3天里发生的事情，以及现在（第四天早上）的情况。温婉在哪里、在做什么、心情如何。就像描述"前往电影院"一样，生成完整的剧情场景。)`, true);

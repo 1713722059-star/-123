@@ -1,233 +1,162 @@
-// 预设服务 - 负责解析SillyTavern预设文件
-// 屏蔽美化内容和思考过程，提取核心提示词内容
+/**
+ * 预设管理服务
+ * 用于独立运行时管理预设配置（破限、温度、top_p等）
+ * 参考 XianTu 的 promptStorage.ts，但简化为只管理预设参数
+ */
 
-export interface SillyTavernPreset {
-  prompts?: Array<{
-    identifier?: string;
-    name?: string;
-    enabled?: boolean;
-    role?: string;
-    content?: string;
-    system_prompt?: boolean;
-    marker?: boolean;
-    [key: string]: any;
-  }>;
+// 使用 localStorage 作为存储（如果未来需要更大容量，可以迁移到 IndexedDB）
+const PRESET_STORAGE_KEY = 'wenwan_presets';
+const DEFAULT_PRESET_NAME = 'default';
+
+export interface PresetConfig {
+  name: string;
+  temperature?: number;
+  top_p?: number;
+  max_tokens?: number;
+  frequency_penalty?: number;
+  presence_penalty?: number;
+  // 其他可能的预设参数
   [key: string]: any;
 }
 
 /**
- * 清理内容：移除美化、思考过程、注释等
+ * 默认预设配置
  */
-function cleanContent(content: string): string {
-  if (!content) return '';
-
-  let cleaned = content;
-
-  // 1. 移除HTML代码块（美化内容）
-  // 匹配 ``` 开头的HTML代码块
-  cleaned = cleaned.replace(/```[\s\S]*?```/g, '');
-  
-  // 2. 移除思考过程标签
-  // <meow>...</meow>, <think_nya~>...</think_nya~>, <thought>...</thought>, <os>...</os>
-  cleaned = cleaned.replace(/<(meow|think_nya~|thought|os)>[\s\S]*?<\/\1>/gi, '');
-  
-  // 3. 移除注释（{{// ...}} 或 {{//注释：...}}）
-  cleaned = cleaned.replace(/\{\{\/\/[^}]*\}\}/g, '');
-  cleaned = cleaned.replace(/\{\{注释[^}]*\}\}/g, '');
-  
-  // 4. 移除特殊标记和变量
-  // {{setvar::...}}, {{getvar::...}}, {{random::...}}, {{user}}, {{char}}等
-  cleaned = cleaned.replace(/\{\{[^}]+\}\}/g, '');
-  
-  // 5. 移除特殊格式标记
-  // <game></game>, <summary></summary>, <details></details>, <background></background>等
-  cleaned = cleaned.replace(/<(game|summary|details|background|tag_fixed)[^>]*>[\s\S]*?<\/\1>/gi, '');
-  cleaned = cleaned.replace(/<(game|summary|details|background|tag_fixed)[^>]*\/?>/gi, '');
-  
-  // 6. 移除小猫之神相关的对话格式（|小猫之神|...）
-  cleaned = cleaned.replace(/\|小猫之神[^|]*\|/g, '');
-  cleaned = cleaned.replace(/\|用户[^|]*\|/g, '');
-  cleaned = cleaned.replace(/\|游戏剧情[^|]*\|/g, '');
-  
-  // 7. 移除特殊分隔符和标记
-  cleaned = cleaned.replace(/<\|sep\|>/g, '');
-  cleaned = cleaned.replace(/<\|前置世界书\|>/g, '');
-  cleaned = cleaned.replace(/<小猫之神世界书处理>/g, '');
-  cleaned = cleaned.replace(/<\/小猫之神世界书处理>/g, '');
-  cleaned = cleaned.replace(/<end>/g, '');
-  cleaned = cleaned.replace(/<role>[^<]*<\/role>/g, '');
-  
-  // 8. 移除多余的空行和空白
-  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
-  cleaned = cleaned.trim();
-
-  return cleaned;
-}
+const DEFAULT_PRESET: PresetConfig = {
+  name: 'default',
+  temperature: 0.9,
+  top_p: 0.95,
+  max_tokens: 2000,
+  frequency_penalty: 0.3,
+  presence_penalty: 0.3,
+};
 
 /**
- * 判断内容是否应该被包含
+ * 预设管理类
  */
-function shouldIncludePrompt(prompt: any): boolean {
-  // 只包含启用的提示词
-  if (prompt.enabled === false) {
-    return false;
+class PresetService {
+  private presets: Record<string, PresetConfig> = {};
+
+  /**
+   * 初始化：从 localStorage 加载预设
+   */
+  init(): void {
+    try {
+      const stored = localStorage.getItem(PRESET_STORAGE_KEY);
+      if (stored) {
+        this.presets = JSON.parse(stored);
+      } else {
+        // 如果没有存储，使用默认预设
+        this.presets[DEFAULT_PRESET_NAME] = DEFAULT_PRESET;
+        this.save();
+      }
+    } catch (error) {
+      console.warn('[PresetService] 加载预设失败，使用默认预设:', error);
+      this.presets[DEFAULT_PRESET_NAME] = DEFAULT_PRESET;
+    }
   }
 
-  // 排除标记为marker的（这些是占位符）
-  if (prompt.marker === true) {
-    return false;
+  /**
+   * 保存预设到 localStorage
+   */
+  private save(): void {
+    try {
+      localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(this.presets));
+    } catch (error) {
+      console.error('[PresetService] 保存预设失败:', error);
+    }
   }
 
-  // 排除特殊标识符
-  const excludeIdentifiers = [
-    'main', // 重定义标记
-    'enhanceDefinitions', // 召唤术
-    'worldInfoBefore',
-    'worldInfoAfter',
-    'personaDescription',
-    'charDescription',
-    'charPersonality',
-    'scenario',
-    'dialogueExamples',
-    'chatHistory',
-    'nsfw', // 上下文构造
-    'jailbreak', // 预填
-    'version_info', // 版本信息
-    'SPresetSettings', // SPreset配置
-  ];
-
-  if (prompt.identifier && excludeIdentifiers.includes(prompt.identifier)) {
-    return false;
+  /**
+   * 获取预设（如果不存在，返回默认预设）
+   */
+  getPreset(name: string = DEFAULT_PRESET_NAME): PresetConfig {
+    if (!this.presets[name]) {
+      return { ...DEFAULT_PRESET };
+    }
+    return { ...this.presets[name] };
   }
 
-  // 排除包含大量HTML/JS代码的内容（美化内容）
-  if (prompt.content) {
-    const htmlPattern = /```[\s\S]*?(html|HTML|<!DOCTYPE|script|style)[\s\S]*?```/i;
-    if (htmlPattern.test(prompt.content)) {
+  /**
+   * 保存预设
+   */
+  savePreset(preset: PresetConfig): void {
+    this.presets[preset.name] = { ...preset };
+    this.save();
+    console.log(`[PresetService] 已保存预设: ${preset.name}`);
+  }
+
+  /**
+   * 删除预设
+   */
+  deletePreset(name: string): boolean {
+    if (name === DEFAULT_PRESET_NAME) {
+      console.warn('[PresetService] 不能删除默认预设');
       return false;
     }
-    
-    // 排除主要是脚本代码的内容
-    if (prompt.content.length > 1000 && /function|const |let |var |<script/i.test(prompt.content)) {
+    if (this.presets[name]) {
+      delete this.presets[name];
+      this.save();
+      console.log(`[PresetService] 已删除预设: ${name}`);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * 获取所有预设名称
+   */
+  getAllPresetNames(): string[] {
+    return Object.keys(this.presets);
+  }
+
+  /**
+   * 获取所有预设
+   */
+  getAllPresets(): Record<string, PresetConfig> {
+    return { ...this.presets };
+  }
+
+  /**
+   * 导出预设（用于备份）
+   */
+  exportPresets(): string {
+    return JSON.stringify(this.presets, null, 2);
+  }
+
+  /**
+   * 导入预设（用于恢复）
+   */
+  importPresets(json: string): boolean {
+    try {
+      const imported = JSON.parse(json);
+      if (typeof imported === 'object' && imported !== null) {
+        this.presets = { ...this.presets, ...imported };
+        this.save();
+        console.log('[PresetService] 已导入预设');
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error('[PresetService] 导入预设失败:', error);
       return false;
     }
   }
 
-  return true;
-}
-
-/**
- * 解析SillyTavern预设文件（改进版，确保读全）
- */
-export function parsePresetFile(presetData: SillyTavernPreset): string {
-  const extractedPrompts: string[] = [];
-
-  // 方法1: 处理prompts数组（标准格式）
-  if (presetData.prompts && Array.isArray(presetData.prompts)) {
-    // 按injection_order排序（如果存在）
-    const sortedPrompts = [...presetData.prompts].sort((a, b) => {
-      const aOrder = a.injection_order ?? 999;
-      const bOrder = b.injection_order ?? 999;
-      return aOrder - bOrder;
-    });
-
-    for (const prompt of sortedPrompts) {
-      // 检查是否应该包含
-      if (!shouldIncludePrompt(prompt)) {
-        continue;
-      }
-
-      // 只处理system角色的提示词
-      if (prompt.role === 'system' || prompt.system_prompt === true) {
-        if (prompt.content) {
-          const cleaned = cleanContent(prompt.content);
-          if (cleaned && cleaned.length > 10) { // 至少10个字符才保留
-            extractedPrompts.push(cleaned);
-          }
-        }
-      }
-    }
-  }
-
-  // 方法2: 处理其他可能的字段（确保读全）
-  // 检查是否有system_prompt字段
-  if (presetData.system_prompt && typeof presetData.system_prompt === 'string') {
-    const cleaned = cleanContent(presetData.system_prompt);
-    if (cleaned && cleaned.length > 10) {
-      extractedPrompts.push(cleaned);
-    }
-  }
-
-  // 检查是否有prompt字段
-  if (presetData.prompt && typeof presetData.prompt === 'string') {
-    const cleaned = cleanContent(presetData.prompt);
-    if (cleaned && cleaned.length > 10) {
-      extractedPrompts.push(cleaned);
-    }
-  }
-
-  // 方法3: 遍历所有字段，查找可能包含提示词的字段
-  for (const key in presetData) {
-    if (key === 'prompts' || key === 'system_prompt' || key === 'prompt') {
-      continue; // 已经处理过
-    }
-    
-    const value = presetData[key];
-    // 如果是字符串且长度较长，可能是提示词内容
-    if (typeof value === 'string' && value.length > 50) {
-      // 检查是否包含常见的提示词关键词
-      if (/角色|性格|场景|对话|回复|描述|规则|指令/i.test(value)) {
-        const cleaned = cleanContent(value);
-        if (cleaned && cleaned.length > 10) {
-          extractedPrompts.push(cleaned);
-        }
-      }
-    }
-  }
-
-  // 合并所有提示词，去重
-  const uniquePrompts = Array.from(new Set(extractedPrompts));
-  return uniquePrompts.join('\n\n');
-}
-
-/**
- * 从JSON文件读取预设
- */
-export function loadPresetFromFile(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    
-    reader.onload = (e) => {
-      try {
-        const content = e.target?.result as string;
-        const presetData: SillyTavernPreset = JSON.parse(content);
-        const extractedContent = parsePresetFile(presetData);
-        resolve(extractedContent);
-      } catch (error) {
-        reject(new Error(`解析预设文件失败: ${error instanceof Error ? error.message : '未知错误'}`));
-      }
+  /**
+   * 重置为默认预设
+   */
+  resetToDefault(): void {
+    this.presets = {
+      [DEFAULT_PRESET_NAME]: { ...DEFAULT_PRESET },
     };
-    
-    reader.onerror = () => {
-      reject(new Error('读取文件失败'));
-    };
-    
-    reader.readAsText(file);
-  });
-}
-
-/**
- * 从JSON字符串解析预设
- */
-export function parsePresetFromJSON(jsonString: string): string {
-  try {
-    const presetData: SillyTavernPreset = JSON.parse(jsonString);
-    return parsePresetFile(presetData);
-  } catch (error) {
-    throw new Error(`解析预设JSON失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    this.save();
+    console.log('[PresetService] 已重置为默认预设');
   }
 }
 
+// 创建单例
+export const presetService = new PresetService();
 
-
-
+// 初始化
+presetService.init();

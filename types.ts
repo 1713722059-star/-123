@@ -108,6 +108,8 @@ export interface BodyModification {
 
 export interface BodyStatus {
   location: LocationID;
+  exactLocation?: string; // 精确位置（如"cos社活动室"、"A展厅"、"游艇上"等），用于在大地点中找到温婉
+  isAccessible?: boolean; // 是否可被找到（true=能找到，false=找不到，如游艇已出海）
   favorability: number; // 0-100
   libido: number; // Sexual Desire (0-100)
   degradation: number; // Degradation Level (0-100)
@@ -123,10 +125,9 @@ export interface BodyStatus {
   overallClothing: string; // General outfit description
   currentAction: string; // What she is explicitly doing right now
   innerThought: string; // Her hidden internal monologue
-  // 新增：弧光系统
-  arcLight: ArcLight; // 当前弧光：A/B/C/D/E/null（试探期）
-  trialPeriod: number; // 试探期天数（0-5天，5天后判定进入哪条线）
-  lastArcLightCheck: string; // 上次弧光检查日期（格式：YYYY-MM-DD）
+  // 已废弃：弧光系统（保留arcLight字段用于向后兼容，但不影响行为）
+  arcLight: ArcLight | null; // 当前弧光：已废弃，保留用于向后兼容
+  // 已删除：trialPeriod, lastArcLightCheck（试探期系统已移除）
   // 新增：黄毛系统
   yellowHair1: YellowHairInfo | null; // 黄毛1（富二代或肥宅）
   yellowHair2: YellowHairInfo | null; // 黄毛2（可以同时存在）
